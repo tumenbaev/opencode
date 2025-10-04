@@ -21,13 +21,13 @@ const operations = [
 ] as const
 
 export const Parameters = Schema.Struct({
-  operation: Schema.Literals(operations).annotate({ description: "The LSP operation to perform" }),
+  operation: Schema.Literals(operations),
   filePath: Schema.String.annotate({ description: "The absolute or relative path to the file" }),
   line: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
-    description: "The line number (1-based, as shown in editors)",
+    description: "The line number (1-based)",
   }),
   character: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
-    description: "The character offset (1-based, as shown in editors)",
+    description: "The character offset (1-based)",
   }),
   query: Schema.optional(Schema.String).annotate({
     description: "Search query for workspaceSymbol. Empty string requests all symbols.",
