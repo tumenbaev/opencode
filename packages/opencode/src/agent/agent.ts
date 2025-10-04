@@ -237,7 +237,7 @@ const layer = Layer.effect(
             options: {},
             native: true,
             hidden: true,
-            temperature: 0.5,
+              temperature: 0.3,
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
