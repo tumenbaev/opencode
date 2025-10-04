@@ -1,33 +1,34 @@
-Use the `apply_patch` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
+Use this tool to make structured file edits with a single patch. The format is inspired by unified diffs, but with no line numbers. You must use the exact patch markers and headers, otherwise the patch will be rejected.
 
+Every patch MUST start with following line:
 *** Begin Patch
-[ one or more file sections ]
+
+Every patch MUST end with following line:
 *** End Patch
 
-Within that envelope, you get a sequence of file operations.
-You MUST include a header to specify the action you are taking.
-Each operation starts with one of three headers:
+Paths within the project must be relative and outside the project must be absolute.
 
-*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
-*** Delete File: <path> - remove an existing file. Nothing follows.
-*** Update File: <path> - patch an existing file in place (optionally with a rename).
+To update and/or move an existing file, use:
 
-Example patch:
+*** Update File: <path>
+*** Move to: <new path>
+@@
+ <unchanged context lines prefixed by space>
+-<old line>
++<new line>
 
-```
-*** Begin Patch
-*** Add File: hello.txt
-+Hello world
-*** Update File: src/app.py
-*** Move to: src/main.py
-@@ def greet():
--print("Hi")
-+print("Hello, world!")
-*** Delete File: obsolete.txt
-*** End Patch
-```
+Every update hunk MUST start with @@ line (without line numbers).
+Context lines are optional and may include multiple lines.
+`*** Move to:` is optional. If you include it, it must appear immediately after `*** Update File:` and before any line chunks. Always prefer `Move to` over `Delete+Add` for efficiency when doing refactoring.
 
-It is important to remember:
+To add a new file, use:
 
-- You must include a header with your intended action (Add/Delete/Update)
-- You must prefix new lines with `+` even when creating a new file
+*** Add File: <path>
++<line 1>
++<line 2>
+
+Every line in a new file must start with `+`.
+
+To delete a file, use:
+
+*** Delete File: <path>

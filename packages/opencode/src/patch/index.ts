@@ -107,7 +107,7 @@ function parseUpdateFileChunks(lines: string[], startIdx: number): { chunks: Upd
   while (i < lines.length && !lines[i].startsWith("***")) {
     if (lines[i].startsWith("@@")) {
       // Parse context line
-      const contextLine = lines[i].substring(2).trim()
+      const contextLine = lines[i].indexOf("@@", 2) === -1 ? lines[i].substring(2).trim() : ""
       i++
 
       const oldLines: string[] = []

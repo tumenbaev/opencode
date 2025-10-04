@@ -275,6 +275,8 @@ export function render(name: string, platform: NodeJS.Platform, limits: Limits, 
   return {
     description: renderPrompt(DESCRIPTION, {
       intro: selected.intro,
+      maxLines: String(limits.maxLines),
+      maxBytes: String(limits.maxBytes),
       os: platform,
       shell: name,
       tmp: Global.Path.tmp,
