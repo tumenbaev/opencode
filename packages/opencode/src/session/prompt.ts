@@ -39,6 +39,7 @@ import { Shell } from "@opencode-ai/core/shell"
 import { ShellID } from "@/tool/shell/id"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
+import { TuiEvent } from "@/server/tui-event"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
@@ -250,6 +251,67 @@ const layer = Layer.effect(
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
+    })
+
+    const maybeResearchBuild = Effect.fn("SessionPrompt.maybeResearchBuild")(function* (input: PromptInput) {
+      const agent = input.agent ?? (yield* agents.defaultAgent())
+      if (agent !== "build") return Option.none<PromptInput>()
+
+      const prev = yield* sessions
+        .findMessage(input.sessionID, (msg) => msg.info.role === "assistant" && !!msg.info.agent)
+        .pipe(Effect.orDie)
+      if (Option.isNone(prev)) return Option.none<PromptInput>()
+      if (prev.value.info.agent !== "research") return Option.none<PromptInput>()
+
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const plan = Session.plan(session, yield* InstanceState.context)
+      const read = yield* fsys.readFileString(plan).pipe(Effect.exit)
+      if (Exit.isFailure(read)) {
+        const err = Cause.squash(read.cause)
+        const message = `failed to read plan file: ${err instanceof Error ? err.message : String(err)}`
+        yield* Effect.logError(message, { plan, sessionID: input.sessionID })
+        yield* events.publish(Session.Event.Error, {
+          sessionID: input.sessionID,
+          error: new NamedError.Unknown({ message }).toObject(),
+        })
+        throw new Error(message)
+      }
+      const content = read.value
+      if (!content.trim()) {
+        const message = "plan file is empty"
+        yield* Effect.logError(message, { plan, sessionID: input.sessionID })
+        yield* events.publish(Session.Event.Error, {
+          sessionID: input.sessionID,
+          error: new NamedError.Unknown({ message }).toObject(),
+        })
+        throw new Error(message)
+      }
+
+      const text = input.parts
+        .filter((part): part is Extract<PromptInput["parts"][number], { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("\n")
+        .trim()
+      const fresh = yield* sessions.create()
+      yield* events.publish(TuiEvent.SessionSelect, { sessionID: fresh.id })
+      const next: PromptInput = {
+        sessionID: fresh.id,
+        agent: "build",
+        model: input.model,
+        noReply: input.noReply,
+        tools: input.tools,
+        system: input.system,
+        format: input.format,
+        variant: input.variant,
+        parts: [
+          {
+            type: "text",
+            text: text ? `${text}\n\n${content}` : content,
+          },
+          ...input.parts.filter((part) => part.type !== "text"),
+        ],
+      }
+      return Option.some(next)
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -1052,23 +1114,28 @@ const layer = Layer.effect(
     const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const handoff = yield* maybeResearchBuild(input)
+      const next = Option.isSome(handoff) ? handoff.value : input
+      const session = yield* sessions.get(next.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
-      const message = yield* createUserMessage(input)
-      yield* sessions.touch(input.sessionID)
+      const message = yield* createUserMessage(next)
+      yield* sessions.touch(next.sessionID)
 
       const permissions: PermissionV1.Rule[] = []
-      for (const [t, enabled] of Object.entries(input.tools ?? {})) {
+      for (const [t, enabled] of Object.entries(next.tools ?? {})) {
         permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
       }
       if (permissions.length > 0) {
-        session.permission = permissions
-        yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+        // Merge so per-call tool rules don't clobber inherited session rules
+        // (e.g. external_directory allows from the parent session).
+        const merged = Permission.merge(session.permission ?? [], permissions)
+        session.permission = merged
+        yield* sessions.setPermission({ sessionID: session.id, permission: merged })
       }
 
-      if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID })
-    })
+      if (next.noReply === true) return message
+      return yield* loop({ sessionID: next.sessionID })
+    }, Effect.catch(Effect.die))
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -1359,14 +1426,15 @@ const layer = Layer.effect(
         command: input.command,
         agent: input.agent,
       })
-      const cmd = yield* commands.get(input.command)
-      if (!cmd) {
+      const found = yield* commands.get(input.command)
+      if (!found) {
         const available = (yield* commands.list()).map((c) => c.name)
         const hint = available.length ? ` Available commands: ${available.join(", ")}` : ""
         const error = new NamedError.Unknown({ message: `Command not found: "${input.command}".${hint}` })
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
+      const cmd = found
       const agentName = cmd.agent ?? input.agent
 
       const raw = input.arguments.match(argsRegex) ?? []

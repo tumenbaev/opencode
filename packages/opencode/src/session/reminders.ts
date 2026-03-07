@@ -23,6 +23,22 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
   if (!userMessage) return input.messages
 
+  const assistantMessage = input.messages.findLast((msg) => msg.info.role === "assistant")
+  if (input.agent.name === "research" && assistantMessage?.info.agent !== "research") {
+    const plan = Session.plan(input.session, yield* InstanceState.context)
+    if (!(yield* fsys.existsSafe(plan))) yield* fsys.writeWithDirs(plan, "").pipe(Effect.orDie)
+    const part = yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: userMessage.info.id,
+      sessionID: userMessage.info.sessionID,
+      type: "text",
+      text: `<system-reminder>Plan file ${plan} exists and ready to write.</system-reminder>`,
+      synthetic: true,
+    })
+    userMessage.parts.push(part)
+    return input.messages
+  }
+
   if (!flags.experimentalPlanMode) {
     if (input.agent.name === "plan") {
       userMessage.parts.push({
@@ -47,8 +63,6 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
     }
     return input.messages
   }
-
-  const assistantMessage = input.messages.findLast((msg) => msg.info.role === "assistant")
   if (input.agent.name !== "plan" && assistantMessage?.info.agent === "plan") {
     const ctx = yield* InstanceState.context
     const plan = Session.plan(input.session, ctx)
