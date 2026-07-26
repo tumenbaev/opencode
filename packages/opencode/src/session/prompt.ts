@@ -57,6 +57,7 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { isTextLikeFileMime } from "@/util/media"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -889,7 +890,7 @@ const layer = Layer.effect(
                   .pipe(Effect.onInterrupt(() => Effect.sync(() => controller.abort())))
               }
 
-              if (mime === "text/plain") {
+              if (isTextLikeFileMime(mime)) {
                 let offset: number | undefined
                 let limit: number | undefined
                 const range = { start: url.searchParams.get("start"), end: url.searchParams.get("end") }

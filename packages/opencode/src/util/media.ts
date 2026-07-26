@@ -8,6 +8,10 @@ export function isMedia(mime: string) {
   return mime.startsWith("image/") || isPdfAttachment(mime)
 }
 
+export function isTextLikeFileMime(mime: string) {
+  return mime === "text/plain" || mime === "application/octet-stream"
+}
+
 export function isImageAttachment(mime: string) {
   return mime.startsWith("image/") && mime !== "image/svg+xml" && mime !== "image/vnd.fastbidsheet"
 }
