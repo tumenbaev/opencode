@@ -1112,8 +1112,105 @@ const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
-    const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
-      "SessionPrompt.prompt",
+    const renderCommandTemplate = Effect.fnUntraced(function* (cmd: Command.Info, arguments_: string) {
+      const args = (arguments_.match(argsRegex) ?? []).map((arg) => arg.replace(quoteTrimRegex, ""))
+      const templateCommand = yield* Effect.promise(async () => cmd.template)
+      const placeholders = templateCommand.match(placeholderRegex) ?? []
+      const last = placeholders.reduce((value, item) => Math.max(value, Number(item.slice(1))), 0)
+      const withArgs = templateCommand.replaceAll(placeholderRegex, (_, index) => {
+        const position = Number(index)
+        const argIndex = position - 1
+        if (argIndex >= args.length) return ""
+        if (position === last) return args.slice(argIndex).join(" ")
+        return args[argIndex]
+      })
+      const usesArgumentsPlaceholder = templateCommand.includes("$ARGUMENTS")
+      const template =
+        placeholders.length === 0 && !usesArgumentsPlaceholder && arguments_.trim()
+          ? withArgs.replaceAll("$ARGUMENTS", arguments_) + "\n\n" + arguments_
+          : withArgs.replaceAll("$ARGUMENTS", arguments_)
+      const shellMatches = ConfigMarkdown.shell(template)
+      if (shellMatches.length === 0) return template.trim()
+
+      const cfg = yield* config.get()
+      const sh = Shell.preferred(cfg.shell)
+      const results = yield* Effect.promise(() =>
+        Promise.all(
+          shellMatches.map(async ([, shellCommand]) =>
+            (await Process.text([shellCommand], { shell: sh, nothrow: true })).text,
+          ),
+        ),
+      )
+      let index = 0
+      return template.replace(bashRegex, () => results[index++]).trim()
+    })
+
+    const expandInlineCommands = Effect.fnUntraced(function* (input: PromptInput) {
+      const cached = new Map<string, PromptInput["parts"] | undefined>()
+      const contexts: Types.DeepMutable<PromptInput["parts"]> = []
+      const files = new Set(
+        input.parts
+          .filter(
+            (part): part is Extract<PromptInput["parts"][number], { type: "file" }> =>
+              part.type === "file" && new URL(part.url).protocol === "file:",
+          )
+          .map((part) => fileURLToPath(part.url)),
+      )
+      let textOffset = 0
+      let prior: string | undefined
+      const parts = yield* Effect.forEach(
+        input.parts,
+        (part) =>
+          Effect.gen(function* () {
+            if (part.type !== "text") return part
+            const original = part.text
+            let cursor = 0
+            let expanded = ""
+            let changed = false
+            for (const match of original.matchAll(inlineCommandRegex)) {
+              const index = match.index
+              const previous = index > 0 ? original[index - 1] : prior
+              const following = original[index + match[0].length]
+              if (textOffset + index === 0 || !previous || !whitespaceRegex.test(previous)) continue
+              if (following !== undefined && !whitespaceRegex.test(following)) continue
+
+              const name = match[1]
+              if (!name) continue
+              const resolved = cached.has(name)
+                ? cached.get(name)
+                : yield* Effect.gen(function* () {
+                    const cmd = yield* commands.get(name)
+                    if (!cmd) return undefined
+                    return yield* resolvePromptParts(yield* renderCommandTemplate(cmd, ""))
+                  })
+              if (!cached.has(name)) cached.set(name, resolved)
+              if (!resolved) continue
+
+              expanded += original.slice(cursor, index) + (resolved.find((item) => item.type === "text")?.text ?? "")
+              cursor = index + match[0].length
+              changed = true
+              for (const context of resolved) {
+                if (context.type === "text") continue
+                if (context.type === "file") {
+                  const filepath = fileURLToPath(context.url)
+                  if (files.has(filepath)) continue
+                  files.add(filepath)
+                }
+                contexts.push(context)
+              }
+            }
+            textOffset += original.length
+            if (original.length > 0) prior = original.at(-1)
+            if (!changed) return part
+            return { ...part, text: expanded + original.slice(cursor) }
+          }),
+        { concurrency: 1 },
+      )
+      return { ...input, parts: [...parts, ...contexts] }
+    })
+
+    const promptImpl: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
+      "SessionPrompt.promptImpl",
     )(function* (input: PromptInput) {
       const handoff = yield* maybeResearchBuild(input)
       const next = Option.isSome(handoff) ? handoff.value : input
@@ -1137,6 +1234,12 @@ const layer = Layer.effect(
       if (next.noReply === true) return message
       return yield* loop({ sessionID: next.sessionID })
     }, Effect.catch(Effect.die))
+
+    const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
+      "SessionPrompt.prompt",
+    )(function* (input: PromptInput) {
+      return yield* promptImpl(yield* expandInlineCommands(input))
+    })
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -1438,44 +1541,7 @@ const layer = Layer.effect(
       const cmd = found
       const agentName = cmd.agent ?? input.agent
 
-      const raw = input.arguments.match(argsRegex) ?? []
-      const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
-      const templateCommand = yield* Effect.promise(async () => cmd.template)
-
-      const placeholders = templateCommand.match(placeholderRegex) ?? []
-      let last = 0
-      for (const item of placeholders) {
-        const value = Number(item.slice(1))
-        if (value > last) last = value
-      }
-
-      const withArgs = templateCommand.replaceAll(placeholderRegex, (_, index) => {
-        const position = Number(index)
-        const argIndex = position - 1
-        if (argIndex >= args.length) return ""
-        if (position === last) return args.slice(argIndex).join(" ")
-        return args[argIndex]
-      })
-      const usesArgumentsPlaceholder = templateCommand.includes("$ARGUMENTS")
-      let template = withArgs.replaceAll("$ARGUMENTS", input.arguments)
-
-      if (placeholders.length === 0 && !usesArgumentsPlaceholder && input.arguments.trim()) {
-        template = template + "\n\n" + input.arguments
-      }
-
-      const shellMatches = ConfigMarkdown.shell(template)
-      if (shellMatches.length > 0) {
-        const cfg = yield* config.get()
-        const sh = Shell.preferred(cfg.shell)
-        const results = yield* Effect.promise(() =>
-          Promise.all(
-            shellMatches.map(async ([, cmd]) => (await Process.text([cmd], { shell: sh, nothrow: true })).text),
-          ),
-        )
-        let index = 0
-        template = template.replace(bashRegex, () => results[index++])
-      }
-      template = template.trim()
+      const template = yield* renderCommandTemplate(cmd, input.arguments)
 
       const taskModel = yield* Effect.gen(function* () {
         if (cmd.model) return Provider.parseModel(cmd.model)
@@ -1532,7 +1598,7 @@ const layer = Layer.effect(
         { parts },
       )
 
-      const result = yield* prompt({
+      const result = yield* promptImpl({
         sessionID: input.sessionID,
         messageID: input.messageID,
         model: userModel,
@@ -1663,6 +1729,8 @@ const bashRegex = /!`([^`]+)`/g
 const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
 const placeholderRegex = /\$(\d+)/g
 const quoteTrimRegex = /^["']|["']$/g
+const inlineCommandRegex = /\/(\S+)/g
+const whitespaceRegex = /\s/
 
 export const node = LayerNode.make({
   service: Service,

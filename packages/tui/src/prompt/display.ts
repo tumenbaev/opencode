@@ -46,3 +46,10 @@ export function mentionTriggerIndex(value: string, offset = promptOffsetWidth(va
     return promptOffsetWidth(text.slice(0, index))
   }
 }
+
+export function slashTriggerIndex(value: string, offset = promptOffsetWidth(value)) {
+  const text = displaySlice(value, 0, offset)
+  const index = text.search(/\S+$/)
+  if (index === -1 || text[index] !== "/") return
+  return promptOffsetWidth(text.slice(0, index))
+}

@@ -435,7 +435,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const setMode = (mode: "normal" | "shell") => {
     setStore("mode", mode)
-    setStore({ popover: null, slashMenu: false, slashMenuQuery: "" })
+    setStore({ popover: null, slashMenu: false, slashMenuQuery: "", slashStart: null })
     requestAnimationFrame(() => editorRef?.focus())
   }
 
@@ -469,7 +469,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     },
   ])
 
-  const closePopover = () => setStore({ popover: null, slashMenu: false, slashMenuQuery: "" })
+  const closePopover = () => setStore({ popover: null, slashMenu: false, slashMenuQuery: "", slashStart: null })
 
   const resetHistoryNavigation = (force = false) => {
     if (!force && (store.historyIndex < 0 || store.applyingHistory)) return
@@ -718,18 +718,40 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const handleSlashSelect = (cmd: SlashCommand | undefined) => {
     if (!cmd) return
     const menu = store.slashMenu
+    const slashStart = store.slashStart
+    if (!menu && slashStart !== null && slashStart > 0 && cmd.type !== "custom") return
     closePopover()
     const images = imageAttachments()
 
     if (cmd.type === "custom") {
-      const text = `/${cmd.trigger} `
       if (menu) {
+        const text = `/${cmd.trigger} `
         editorRef.focus()
         setCursorPosition(editorRef, 0)
         addPart({ type: "text", content: text, start: 0, end: text.length })
         focusEditorEnd()
         return
       }
+
+      if (slashStart !== null) {
+        const cursorPosition = getCursorPosition(editorRef)
+        const suffix = parseFromDOM()
+          .map((part) => ("content" in part ? part.content : ""))
+          .join("")
+          .slice(cursorPosition)
+        const text = `/${cmd.trigger}${/^\s/.test(suffix) ? "" : " "}`
+        editorRef.focus()
+        setCursorPosition(editorRef, cursorPosition)
+        const selection = window.getSelection()
+        if (!selection || selection.rangeCount === 0) return
+        const range = selection.getRangeAt(0)
+        setRangeEdge(editorRef, range, "start", slashStart)
+        setRangeEdge(editorRef, range, "end", cursorPosition)
+        addPart({ type: "text", content: text, start: 0, end: text.length })
+        return
+      }
+
+      const text = `/${cmd.trigger} `
       setEditorText(text)
       prompt.set([{ type: "text", content: text, start: 0, end: text.length }, ...images], text.length)
       focusEditorEnd()
@@ -746,17 +768,27 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     command.trigger(cmd.id, "slash")
   }
 
+  const slashAutocompleteCommands = createMemo(() => {
+    if (store.slashMenu || store.slashStart === null || store.slashStart === 0) return slashCommands()
+    return slashCommands().filter((cmd) => cmd.type === "custom")
+  })
+
   const {
-    flat: slashFlat,
+    flat: slashOptions,
     active: slashActive,
     setActive: setSlashActive,
     onInput: slashOnInput,
     onKeyDown: slashOnKeyDown,
   } = useFilteredList<SlashCommand>({
-    items: slashCommands,
+    items: slashAutocompleteCommands,
     key: (x) => x?.id,
     filterKeys: ["trigger", "title"],
     onSelect: handleSlashSelect,
+  })
+  const slashFlat = createMemo(() => {
+    const items = slashOptions()
+    if (store.slashMenu || store.slashStart === null || store.slashStart === 0) return items
+    return items.filter((cmd) => cmd.type === "custom")
   })
 
   const createPill = (part: FileAttachmentPart | AgentPart) => {
@@ -997,15 +1029,21 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const shellMode = store.mode === "shell"
 
     if (!shellMode) {
-      const atMatch = rawText.substring(0, cursorPosition).match(/@(\S*)$/)
-      const slashMatch = rawText.match(/^\/(\S*)$/)
+      const textBeforeCursor = rawText.substring(0, cursorPosition)
+      const atMatch = textBeforeCursor.match(/@(\S*)$/)
+      const slashMatch = textBeforeCursor.match(/(^|\s)\/(\S*)$/)
 
       if (atMatch) {
         atOnInput(atMatch[1])
-        setStore({ popover: "at", slashMenu: false, slashMenuQuery: "" })
+        setStore({ popover: "at", slashMenu: false, slashMenuQuery: "", slashStart: null })
       } else if (slashMatch) {
-        slashOnInput(slashMatch[1])
-        setStore({ popover: "slash", slashMenu: false, slashMenuQuery: "" })
+        slashOnInput(slashMatch[2])
+        setStore({
+          popover: "slash",
+          slashMenu: false,
+          slashMenuQuery: "",
+          slashStart: (slashMatch.index ?? 0) + slashMatch[1].length,
+        })
       } else {
         closePopover()
       }
@@ -1218,7 +1256,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       setMode: (mode) => setStore("mode", mode),
       setPopover: (popover) => {
         if (!popover) return closePopover()
-        setStore({ popover, slashMenu: false, slashMenuQuery: "" })
+        setStore({ popover, slashMenu: false, slashMenuQuery: "", slashStart: null })
       },
       newSessionWorktree: () => props.newSessionWorktree,
       onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
