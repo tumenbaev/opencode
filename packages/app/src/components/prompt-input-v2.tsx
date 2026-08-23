@@ -312,6 +312,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
       id: item.id,
       kind: "command",
       label: `/${item.trigger}`,
+      snippet: item.type === "custom" ? true : undefined,
       trigger: item.trigger,
       title: item.title,
       description: item.description,

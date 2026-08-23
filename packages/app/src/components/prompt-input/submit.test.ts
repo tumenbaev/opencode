@@ -135,6 +135,7 @@ beforeAll(async () => {
   mock.module("@opencode-ai/ui/toast", () => ({
     Toast: { Region: () => null },
     showToast: () => 0,
+    toaster: { dismiss: () => undefined },
   }))
 
   mock.module("@opencode-ai/core/util/encode", () => ({
@@ -531,6 +532,39 @@ describe("prompt submit worktree selection", () => {
       },
     ])
     expect(serverSessionSyncs).toBe(0)
+  })
+
+  test("submits embedded slash commands as normal prompts", async () => {
+    params = { id: "session-1" }
+    commands.push({ name: "review" })
+    promptValue = [{ type: "text", content: "Please /review staged changes", start: 0, end: 29 }]
+
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+    await Bun.sleep(0)
+
+    expect(sentCommands).toEqual([])
+    expect(sentPrompts).toEqual(["/repo/main"])
+    expect(promptInputs[0]).toMatchObject({
+      sessionID: "session-1",
+      text: "Please /review staged changes",
+    })
   })
 
   test("uses an injected model selection", async () => {

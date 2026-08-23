@@ -5,7 +5,7 @@ export type PromptInputV2InteractionState = {
   popover:
     | { type: "closed" }
     | { type: "context"; query: string; activeID?: string }
-    | { type: "command-inline"; query: string; activeID?: string }
+    | { type: "command-inline"; query: string; index: number; activeID?: string }
     | { type: "command-menu"; query: string; activeID?: string }
   drag: "idle" | "active"
   focus: "editor" | "command-search" | "external"
@@ -93,7 +93,8 @@ function inputChanged(
       { type: "draft.setText", value: "" },
     ])
   }
-  const context = value.slice(0, cursor ?? value.length).match(/(?:^|\s)@([^\s@]*)$/)
+  const beforeCursor = value.slice(0, cursor ?? value.length)
+  const context = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/)
   if (context) {
     const query = context[1] ?? ""
     return changed({ ...state, popover: { type: "context", query }, focus: "editor" }, [
@@ -102,10 +103,11 @@ function inputChanged(
     ])
   }
 
-  const command = value.match(/^\/(\S*)$/)
+  const command = beforeCursor.match(/(?:^|\s)\/(\S*)$/)
   if (command) {
     const query = command[1] ?? ""
-    return changed({ ...state, popover: { type: "command-inline", query }, focus: "editor" }, [
+    const index = beforeCursor.length - query.length - 1
+    return changed({ ...state, popover: { type: "command-inline", query, index }, focus: "editor" }, [
       ...setText,
       { type: "popover.filter", popover: "command", query },
     ])
@@ -122,11 +124,15 @@ function openCommands(
   persisted: PromptInputV2PersistedState,
 ): PromptInputV2Transition {
   if (!populated(persisted)) {
-    return changed({ ...state, popover: { type: "command-inline", query: "" }, focus: "editor" }, [
-      { type: "draft.setText", value: promptText(persisted) + "/" },
-      { type: "popover.filter", popover: "command", query: "" },
-      { type: "focus.editor" },
-    ])
+    const current = promptText(persisted)
+    return changed(
+      { ...state, popover: { type: "command-inline", query: "", index: current.length }, focus: "editor" },
+      [
+        { type: "draft.setText", value: current + "/" },
+        { type: "popover.filter", popover: "command", query: "" },
+        { type: "focus.editor" },
+      ],
+    )
   }
   return changed({ ...state, popover: { type: "command-menu", query: "" }, focus: "command-search" }, [
     { type: "popover.filter", popover: "command", query: "" },
@@ -173,6 +179,8 @@ function suggestionSelected(
   const current = promptText(persisted)
   const commands: PromptInputV2InteractionCommand[] = []
   if (item.kind === "command") {
+    const cursor = persisted.cursor ?? current.length
+    const suffix = current.slice(cursor)
     commands.push({
       type: "draft.setText",
       value:
@@ -180,7 +188,9 @@ function suggestionSelected(
           ? current.trim()
             ? `${item.label} ${current.trim()}`
             : `${item.label} `
-          : replaceTrigger(current, "/", `${item.label} `),
+          : state.popover.type === "command-inline"
+            ? current.slice(0, state.popover.index) + item.label + (/^\s/.test(suffix) ? "" : " ") + suffix
+            : current,
     })
   } else {
     commands.push({ type: "mention.add", item })
@@ -237,11 +247,6 @@ function populated(persisted: PromptInputV2PersistedState) {
     persisted.context.items.length > 0 ||
     persisted.prompt.some((part) => part.type === "file" || part.type === "image")
   )
-}
-
-function replaceTrigger(value: string, trigger: "@" | "/", replacement: string) {
-  const index = trigger === "/" ? value.indexOf(trigger) : value.lastIndexOf(trigger)
-  return index < 0 ? replacement : value.slice(0, index) + replacement
 }
 
 function changed(

@@ -131,7 +131,10 @@ export function createPromptInputV2Controller(input: {
     },
   })
   const commandList = useFilteredList<PromptInputV2Suggestion>({
-    items: () => input.commands(),
+    items: () =>
+      state.popover.type === "command-inline" && state.popover.index > 0
+        ? input.commands().filter((item) => item.snippet)
+        : input.commands(),
     key: (item) => item.id,
     filterKeys: ["trigger", "title"],
   })
