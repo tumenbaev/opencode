@@ -281,6 +281,7 @@ const layer = Layer.effect(
           location: "<built-in>",
           content: CUSTOMIZE_OPENCODE_SKILL_BODY,
         }
+        delete s.skills[CUSTOMIZE_OPENCODE_SKILL_NAME]
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
         return s
       }),

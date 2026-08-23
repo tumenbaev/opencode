@@ -30,7 +30,7 @@ afterEach(async () => {
 const it = testEffect(LayerNode.compile(LayerNode.group([ToolRegistry.node, CrossSpawnSpawner.node, Ripgrep.node])))
 
 describe("tool.skill", () => {
-  it.instance("execute returns skill content block with files", () =>
+  it.instance("execute adds file hints only when companion files exist", () =>
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory
       const skill = path.join(dir, ".opencode", "skill", "tool-skill")
@@ -48,7 +48,6 @@ Use this skill.
 `,
         ),
       )
-      yield* Effect.promise(() => Bun.write(path.join(skill, "scripts", "demo.txt"), "demo"))
 
       const home = process.env.OPENCODE_TEST_HOME
       process.env.OPENCODE_TEST_HOME = dir
@@ -79,17 +78,35 @@ Use this skill.
           }),
       }
 
+      const plain = yield* tool.execute({ name: "tool-skill" }, ctx)
+      expect(plain.output).toBe(`<skill_content>\n# Tool Skill\n\nUse this skill.\n</skill_content>`)
+
+      yield* Effect.promise(() => Bun.write(path.join(skill, "scripts", "demo.txt"), "demo"))
       const result = yield* tool.execute({ name: "tool-skill" }, ctx)
       const file = path.resolve(skill, "scripts", "demo.txt")
 
-      expect(requests.length).toBe(1)
+      expect(requests.length).toBe(2)
       expect(requests[0].permission).toBe("skill")
       expect(requests[0].patterns).toContain("tool-skill")
       expect(requests[0].always).toContain("tool-skill")
       expect(result.metadata.dir).toBe(skill)
-      expect(result.output).toContain(`<skill_content name="tool-skill">`)
+      expect(result.output).toContain("<skill_content>")
       expect(result.output).toContain(`Base directory for this skill: ${skill}`)
       expect(result.output).toContain(`<file>${file}</file>`)
+      expect(result.output).not.toContain("Note: file list is sampled.")
+
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 9 }, (_, index) => Bun.write(path.join(skill, `reference-${index}.txt`), "reference")),
+        ),
+      )
+      const exact = yield* tool.execute({ name: "tool-skill" }, ctx)
+      expect(exact.output).not.toContain("Note: file list is sampled.")
+
+      yield* Effect.promise(() => Bun.write(path.join(skill, "overflow.txt"), "overflow"))
+      const sampled = yield* tool.execute({ name: "tool-skill" }, ctx)
+      expect(sampled.output).toContain("Note: file list is sampled.")
+      expect(sampled.output.match(/<file>/g)).toHaveLength(10)
     }),
   )
 
