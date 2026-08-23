@@ -31,31 +31,37 @@ export const SkillTool = Tool.define(
           })
 
           const dir = path.dirname(info.location)
-          const base = dir
-          const files = yield* ripgrep.find({
-            cwd: dir,
-            pattern: "!**/SKILL.md",
-            hidden: true,
-            follow: false,
-            signal: ctx.abort,
-            limit: 10,
-          })
+          const files =
+            path.basename(info.location) === "SKILL.md"
+              ? yield* ripgrep.find({
+                  cwd: dir,
+                  pattern: "!**/SKILL.md",
+                  hidden: true,
+                  follow: false,
+                  signal: ctx.abort,
+                  limit: 11,
+                })
+              : []
 
           return {
             title: `Loaded skill: ${info.name}`,
             output: [
-              `<skill_content name="${info.name}">`,
-              `# Skill: ${info.name}`,
-              "",
+              "<skill_content>",
               info.content.trim(),
-              "",
-              `Base directory for this skill: ${base}`,
-              "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
-              "Note: file list is sampled.",
-              "",
-              "<skill_files>",
-              files.map((file) => `<file>${path.resolve(dir, file.path)}</file>`).join("\n"),
-              "</skill_files>",
+              ...(files.length === 0
+                ? []
+                : [
+                    "",
+                    `Base directory for this skill: ${dir}`,
+                    ...(files.length > 10 ? ["Note: file list is sampled."] : []),
+                    "",
+                    "<skill_files>",
+                    files
+                      .slice(0, 10)
+                      .map((file) => `<file>${path.resolve(dir, file.path)}</file>`)
+                      .join("\n"),
+                    "</skill_files>",
+                  ]),
               "</skill_content>",
             ].join("\n"),
             metadata: {

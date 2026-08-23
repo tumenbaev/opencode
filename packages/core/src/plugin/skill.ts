@@ -13,6 +13,7 @@ export const CustomizeOpencodeContent = customizeOpencodeContent
 export const Plugin = define({
   id: "skill",
   effect: Effect.fn(function* (ctx) {
+    return
     yield* ctx.skill.transform((draft) => {
       draft.source(
         SkillV2.EmbeddedSource.make({
