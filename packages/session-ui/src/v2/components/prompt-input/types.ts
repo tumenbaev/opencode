@@ -96,6 +96,7 @@ export type PromptInputV2Suggestion = {
   id: string
   kind: "agent" | "command" | "file" | "reference" | "resource"
   label: string
+  snippet?: boolean
   title?: string
   trigger?: string
   description?: string

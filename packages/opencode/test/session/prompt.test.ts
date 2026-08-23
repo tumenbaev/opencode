@@ -8,7 +8,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
-import { fileURLToPath } from "url"
+import { fileURLToPath, pathToFileURL } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -1809,6 +1809,147 @@ it.instance(
     }),
   { git: true },
   10_000,
+)
+
+noLLMServer.instance(
+  "expands inline commands surrounded by text with empty arguments",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      yield* writeConfig(dir, {
+        ...cfg,
+        command: {
+          greet: { template: "GREETING" },
+          empty: { template: "first=$1 all=$ARGUMENTS" },
+        },
+      })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Inline commands" })
+
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "before /greet after /empty following words" }],
+      })
+
+      expect(result.parts.find((part) => part.type === "text")?.text).toBe(
+        "before GREETING after first= all= following words",
+      )
+    }),
+)
+
+noLLMServer.instance(
+  "expands multiple inline commands once and preserves original part boundaries",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      yield* writeConfig(dir, {
+        ...cfg,
+        command: {
+          one: { template: "ONE /two" },
+          two: { template: "TWO" },
+        },
+      })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Inline command boundaries" })
+
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [
+          { type: "text", text: "x /one y /two z /one" },
+          { type: "text", text: "/two blocked" },
+          { type: "text", text: " " },
+          { type: "text", text: "/two allowed" },
+        ],
+      })
+
+      expect(result.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+        "x ONE /two y TWO z ONE /two",
+        "/two blocked",
+        " ",
+        "TWO allowed",
+      ])
+    }),
+)
+
+noLLMServer.instance(
+  "leaves leading, unknown, suffixed, URL, and path slash literals unexpanded",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      yield* writeConfig(dir, { ...cfg, command: { one: { template: "ONE" } } })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Inline command literals" })
+
+      const leading = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "/one is an ordinary leading prompt" }],
+      })
+      const literals = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "x /missing /one. https://host/one /one/path src/one /one y" }],
+      })
+
+      expect(leading.parts.find((part) => part.type === "text")?.text).toBe("/one is an ordinary leading prompt")
+      expect(literals.parts.find((part) => part.type === "text")?.text).toBe(
+        "x /missing /one. https://host/one /one/path src/one ONE y",
+      )
+    }),
+)
+
+noLLMServer.instance(
+  "appends inline command context and deduplicates original and newly resolved files",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      yield* writeConfig(dir, {
+        ...cfg,
+        command: {
+          context: { template: "CONTEXT @original.txt @shared.txt @general" },
+          again: { template: "AGAIN @shared.txt" },
+        },
+      })
+      yield* writeText(path.join(dir, "original.txt"), "original\n")
+      yield* writeText(path.join(dir, "shared.txt"), "shared\n")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Inline command context" })
+
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [
+          { type: "text", text: "use /context and /again" },
+          {
+            type: "file",
+            mime: "text/plain",
+            filename: "original.txt",
+            url: new URL("original.txt", pathToFileURL(dir + path.sep)).href,
+          },
+        ],
+      })
+
+      const files = result.parts
+        .filter(
+          (part): part is SessionV1.FilePart => part.type === "file" && new URL(part.url).protocol === "file:",
+        )
+        .map((part) => fileURLToPath(part.url))
+      expect(files).toEqual(expect.arrayContaining([path.join(dir, "original.txt"), path.join(dir, "shared.txt")]))
+      expect(files).toHaveLength(2)
+      expect(result.parts.filter((part) => part.type === "agent" && part.name === "general")).toHaveLength(1)
+    }),
+  { git: true },
 )
 
 unix(

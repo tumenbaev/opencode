@@ -21,7 +21,7 @@ import { Locale } from "../../util/locale"
 import type { PromptInfo } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
 import { useBindings, useCommandSlashes, useOpencodeModeStack } from "../../keymap"
-import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
+import { displayCharAt, mentionTriggerIndex, promptOffsetWidth, slashTriggerIndex } from "../../prompt/display"
 import type { FileSystemEntry } from "@opencode-ai/sdk/v2"
 
 function removeLineRange(input: string) {
@@ -445,7 +445,7 @@ export function Autocomplete(props: {
   )
 
   const commands = createMemo((): AutocompleteOption[] => {
-    const results: AutocompleteOption[] = [...slashes()]
+    const results: AutocompleteOption[] = store.index === 0 ? [...slashes()] : []
 
     for (const serverCommand of sync.data.command) {
       if (serverCommand.source === "skill") continue
@@ -454,11 +454,19 @@ export function Autocomplete(props: {
         display: "/" + serverCommand.name + label,
         description: serverCommand.description,
         onSelect: () => {
-          const newText = "/" + serverCommand.name + " "
-          const cursor = props.input().logicalCursor
-          props.input().deleteRange(0, 0, cursor.row, cursor.col)
-          props.input().insertText(newText)
-          props.input().cursorOffset = Bun.stringWidth(newText)
+          const input = props.input()
+          const currentCursorOffset = input.cursorOffset
+          const charAfterCursor = displayCharAt(input.plainText, currentCursorOffset)
+          const newText = "/" + serverCommand.name + (charAfterCursor && /\s/.test(charAfterCursor) ? "" : " ")
+
+          input.cursorOffset = store.index
+          const startCursor = input.logicalCursor
+          input.cursorOffset = currentCursorOffset
+          const endCursor = input.logicalCursor
+
+          input.deleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+          input.insertText(newText)
+          input.cursorOffset = store.index + promptOffsetWidth(newText)
         },
       })
     }
@@ -640,16 +648,16 @@ export function Autocomplete(props: {
     ]),
   }))
 
-  function show(mode: "@" | "/") {
+  function show(mode: "@" | "/", index = props.input().cursorOffset) {
     setStore({
       visible: mode,
-      index: props.input().cursorOffset,
+      index,
     })
   }
 
   function hide() {
     const text = props.input().plainText
-    if (store.visible === "/" && !text.endsWith(" ") && text.startsWith("/")) {
+    if (store.visible === "/" && store.index === 0 && !text.endsWith(" ") && text.startsWith("/")) {
       const cursor = props.input().logicalCursor
       props.input().deleteRange(0, 0, cursor.row, cursor.col)
       // Sync the prompt store immediately since onContentChange is async
@@ -681,7 +689,7 @@ export function Autocomplete(props: {
             // There is a space between the trigger and the cursor
             props.input().getTextRange(store.index, props.input().cursorOffset).match(/\s/) ||
             // "/<command>" is not the sole content
-            (store.visible === "/" && value.match(/^\S+\s+\S+\s*$/))
+            (store.visible === "/" && store.index === 0 && value.match(/^\S+\s+\S+\s*$/))
           ) {
             hide()
           }
@@ -692,18 +700,17 @@ export function Autocomplete(props: {
         const offset = props.input().cursorOffset
         if (offset === 0) return
 
-        // Check for "/" at position 0 - reopen slash commands
-        if (value.startsWith("/") && !value.slice(0, offset).match(/\s/)) {
-          show("/")
-          setStore("index", 0)
+        // Check for a slash trigger in the active token
+        const slashIndex = slashTriggerIndex(value, offset)
+        if (slashIndex !== undefined) {
+          show("/", slashIndex)
           return
         }
 
         // Check for "@" trigger - find the nearest "@" before cursor with no whitespace between
         const idx = mentionTriggerIndex(value, offset)
         if (idx !== undefined) {
-          show("@")
-          setStore("index", idx)
+          show("@", idx)
         }
       },
     })
