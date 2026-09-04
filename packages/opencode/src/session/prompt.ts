@@ -56,6 +56,7 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { SessionRetry } from "./retry"
 import { LLMEvent } from "@opencode-ai/llm"
 import { isTextLikeFileMime } from "@/util/media"
 
@@ -103,6 +104,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly retry: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts, RetryError | Session.BusyError>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
@@ -111,6 +113,10 @@ export interface Interface {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionPrompt") {}
+
+export class RetryError extends Schema.TaggedErrorClass<RetryError>()("SessionRetryError", {
+  message: Schema.String,
+}) {}
 
 const layer = Layer.effect(
   Service,
@@ -146,6 +152,7 @@ const layer = Layer.effect(
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
         cancel: (sessionID: SessionID) => cancel(sessionID),
+        retry: (sessionID: SessionID) => retry(sessionID).pipe(Effect.catch(Effect.die)),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
         prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
       } satisfies TaskPromptOps
@@ -366,6 +373,7 @@ const layer = Layer.effect(
         description: task.description,
         subagent_type: task.agent,
         command: task.command,
+        task_id: task.task_id,
       }
       yield* plugin.trigger(
         "tool.execute.before",
@@ -391,7 +399,7 @@ const layer = Layer.effect(
           sessionID,
           abort: taskAbort.signal,
           callID: part.callID,
-          extra: { bypassAgentCheck: true, promptOps },
+          extra: { bypassAgentCheck: true, promptOps, retryTask: task.retry === true },
           messages: msgs,
           metadata: (val: { title?: string; metadata?: Record<string, any> }) =>
             Effect.gen(function* () {
@@ -1249,6 +1257,19 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    const retry = Effect.fn("SessionPrompt.retry")(function* (sessionID: SessionID) {
+      yield* state.assertNotBusy(sessionID)
+      const failed = yield* lastAssistant(sessionID)
+      if (
+        failed.info.role !== "assistant" ||
+        !failed.info.error ||
+        !SessionRetry.retryable(failed.info.error, failed.info.providerID)
+      ) {
+        return yield* new RetryError({ message: "The latest assistant response is not retryable" })
+      }
+      return yield* loop({ sessionID })
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1617,6 +1638,7 @@ const layer = Layer.effect(
 
     return Service.of({
       cancel,
+      retry,
       prompt,
       loop,
       shell,

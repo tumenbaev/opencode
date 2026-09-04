@@ -17,6 +17,7 @@ import { Database } from "@opencode-ai/core/database/database"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
+  retry(sessionID: SessionID): Effect.Effect<SessionV1.WithParts>
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<SessionV1.WithParts>
 }
@@ -136,6 +137,9 @@ export const TaskTool = Tool.define(
       const session = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
+      if (ctx.extra?.retryTask === true && !session) {
+        return yield* Effect.fail(new Error(`Cannot retry missing task session: ${params.task_id ?? "unknown"}`))
+      }
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
         subagent: next,
@@ -198,18 +202,23 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
-        const parts = yield* ops.resolvePromptParts(params.prompt)
-        const result = yield* ops.prompt({
-          messageID: MessageID.ascending(),
-          sessionID: nextSession.id,
-          model: {
-            modelID: model.modelID,
-            providerID: model.providerID,
-          },
-          variant: next.model ? undefined : variant,
-          agent: next.name,
-          parts,
-        })
+        const result =
+          ctx.extra?.retryTask === true
+            ? yield* ops.retry(nextSession.id)
+            : yield* Effect.gen(function* () {
+                const parts = yield* ops.resolvePromptParts(params.prompt)
+                return yield* ops.prompt({
+                  messageID: MessageID.ascending(),
+                  sessionID: nextSession.id,
+                  model: {
+                    modelID: model.modelID,
+                    providerID: model.providerID,
+                  },
+                  variant: next.model ? undefined : variant,
+                  agent: next.name,
+                  parts,
+                })
+              })
         if (result.info.role === "assistant" && result.info.error) {
           const message =
             "message" in result.info.error.data && typeof result.info.error.data.message === "string"

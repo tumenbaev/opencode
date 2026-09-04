@@ -400,6 +400,8 @@ export type SubtaskPart = {
   prompt: string
   description: string
   agent: string
+  task_id?: string
+  retry?: boolean
   model?: {
     providerID: string
     modelID: string
@@ -2591,6 +2593,8 @@ export type SubtaskPartInput = {
   prompt: string
   description: string
   agent: string
+  task_id?: string
+  retry?: boolean
   model?: {
     providerID: string
     modelID: string
@@ -10189,6 +10193,47 @@ export type SessionPromptAsyncResponses = {
 }
 
 export type SessionPromptAsyncResponse = SessionPromptAsyncResponses[keyof SessionPromptAsyncResponses]
+
+export type SessionRetryData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/retry"
+}
+
+export type SessionRetryErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+  /**
+   * SessionBusyError
+   */
+  409: SessionBusyError
+}
+
+export type SessionRetryError = SessionRetryErrors[keyof SessionRetryErrors]
+
+export type SessionRetryResponses = {
+  /**
+   * Retried response
+   */
+  200: {
+    info: Message
+    parts: Array<Part>
+  }
+}
+
+export type SessionRetryResponse = SessionRetryResponses[keyof SessionRetryResponses]
 
 export type SessionCommandData = {
   body?: {
