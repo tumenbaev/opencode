@@ -554,6 +554,29 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance("retry repeats the failed assistant turn without adding a user message", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const failed = yield* seed(chat.id)
+    yield* sessions.updateMessage({
+      ...failed.assistant,
+      error: new SessionV1.APIError({ message: "Quota exceeded", isRetryable: true }).toObject(),
+      time: { ...failed.assistant.time, completed: Date.now() },
+    })
+    yield* llm.text("recovered")
+
+    const result = yield* prompt.retry(chat.id)
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+
+    expect(result.parts.some((part) => part.type === "text" && part.text === "recovered")).toBe(true)
+    expect(messages.filter((message) => message.info.role === "user")).toHaveLength(1)
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(2)
+  }),
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>

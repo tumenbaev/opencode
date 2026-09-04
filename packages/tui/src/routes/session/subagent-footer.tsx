@@ -8,7 +8,7 @@ import { Locale } from "../../util/locale"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 
-export function SubagentFooter() {
+export function SubagentFooter(props: { retryable?: boolean }) {
   const route = useRouteData("session")
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
@@ -59,7 +59,7 @@ export function SubagentFooter() {
   const parentShortcut = useCommandShortcut("session.parent")
   const previousShortcut = useCommandShortcut("session.child.previous")
   const nextShortcut = useCommandShortcut("session.child.next")
-  const [hover, setHover] = createSignal<"parent" | "prev" | "next" | null>(null)
+  const [hover, setHover] = createSignal<"parent" | "prev" | "next" | "retry" | null>(null)
   useTerminalDimensions()
 
   return (
@@ -94,6 +94,16 @@ export function SubagentFooter() {
             </Show>
           </box>
           <box flexDirection="row" gap={2}>
+            <Show when={props.retryable}>
+              <box
+                onMouseOver={() => setHover("retry")}
+                onMouseOut={() => setHover(null)}
+                onMouseUp={() => keymap.dispatchCommand("session.retry")}
+                backgroundColor={hover() === "retry" ? theme.backgroundElement : theme.backgroundPanel}
+              >
+                <text fg={theme.text}>Retry</text>
+              </box>
+            </Show>
             <box
               onMouseOver={() => setHover("parent")}
               onMouseOut={() => setHover(null)}

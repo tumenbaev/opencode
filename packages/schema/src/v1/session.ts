@@ -207,6 +207,8 @@ export const SubtaskPart = Schema.Struct({
   prompt: Schema.String,
   description: Schema.String,
   agent: Schema.String,
+  task_id: Schema.optional(SessionID),
+  retry: Schema.optional(Schema.Boolean),
   model: Schema.optional(
     Schema.Struct({
       providerID: Provider.ID,
@@ -440,6 +442,8 @@ export const SubtaskPartInput = Schema.Struct({
   prompt: Schema.String,
   description: Schema.String,
   agent: Schema.String,
+  task_id: Schema.optional(SessionID),
+  retry: Schema.optional(Schema.Boolean),
   model: Schema.optional(
     Schema.Struct({
       providerID: Provider.ID,

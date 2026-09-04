@@ -94,6 +94,7 @@ export const SessionPaths = {
   summarize: `${root}/:sessionID/summarize`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
+  retry: `${root}/:sessionID/retry`,
   command: `${root}/:sessionID/command`,
   shell: `${root}/:sessionID/shell`,
   revert: `${root}/:sessionID/revert`,
@@ -338,6 +339,18 @@ export const SessionApi = HttpApi.make("session")
             summary: "Send async message",
             description:
               "Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.",
+          }),
+        ),
+        HttpApiEndpoint.post("retry", SessionPaths.retry, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(SessionV1.WithParts, "Retried response"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError, SessionBusyError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.retry",
+            summary: "Retry failed response",
+            description: "Retry the latest failed assistant response without creating a new user message.",
           }),
         ),
         HttpApiEndpoint.post("command", SessionPaths.command, {
