@@ -112,6 +112,12 @@ function goUpsellKeys(action: RetryAction) {
   }
 }
 
+function hasRetryableError(message?: AssistantMessage) {
+  if (message?.error?.name !== "APIError") return false
+  const status = message.error.data.statusCode
+  return message.error.data.isRetryable || status === 429 || (status !== undefined && status >= 500)
+}
+
 const sessionBindingCommands = [
   "session.share",
   "session.rename",
@@ -282,6 +288,82 @@ export function Session() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
+  const retryTask = createMemo(() => {
+    const current = session()
+    if (!current?.parentID) return undefined
+    return (sync.data.message[current.parentID] ?? [])
+      .flatMap((message) =>
+        message.role === "assistant"
+          ? (sync.data.part[message.id] ?? []).map((part) => ({ message, part }))
+          : [],
+      )
+      .findLast(
+        (item) =>
+          item.part.type === "tool" &&
+          item.part.tool === "task" &&
+          item.part.state.status === "error" &&
+          item.part.state.metadata?.sessionId === current.id,
+      )
+  })
+  const canRetry = createMemo(() => {
+    if (!hasRetryableError(lastAssistant())) return false
+    if ((sync.data.session_status[route.sessionID]?.type ?? "idle") !== "idle") return false
+    const current = session()
+    if (!current?.parentID) return true
+    if ((sync.data.session_status[current.parentID]?.type ?? "idle") !== "idle") return false
+    return retryTask() !== undefined
+  })
+
+  const retryResponse = () => {
+    const current = session()
+    const task = retryTask()
+    if (!current?.parentID) {
+      return sdk.client.session.retry({ sessionID: route.sessionID }, { throwOnError: true }).catch((error) =>
+        toast.show({
+          title: "Failed to retry response",
+          message: errorMessage(error),
+          variant: "error",
+        }),
+      )
+    }
+    if (!task || task.part.type !== "tool") return Promise.resolve()
+
+    const parent = (sync.data.message[current.parentID] ?? []).find(
+      (message): message is UserMessage => message.role === "user" && message.id === task.message.parentID,
+    )
+    const agent = stringValue(task.part.state.input.subagent_type)
+    if (!parent || !agent) return Promise.resolve()
+    return sdk.client.session
+      .prompt(
+        {
+          sessionID: current.parentID,
+          agent: parent.agent,
+          model: {
+            providerID: parent.model.providerID,
+            modelID: parent.model.modelID,
+          },
+          variant: parent.model.variant,
+          parts: [
+            {
+              type: "subtask",
+              task_id: current.id,
+              retry: true,
+              agent,
+              description: stringValue(task.part.state.input.description) ?? "Retry subagent task",
+              prompt: "",
+            },
+          ],
+        },
+        { throwOnError: true },
+      )
+      .catch((error) =>
+        toast.show({
+          title: "Failed to retry subagent",
+          message: errorMessage(error),
+          variant: "error",
+        }),
+      )
+  }
 
   createEffect(() => {
     const sessionID = route.sessionID
@@ -581,6 +663,19 @@ export function Session() {
           modelID: selectedModel.modelID,
           providerID: selectedModel.providerID,
         })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Retry failed response",
+      value: "session.retry",
+      category: "Session",
+      enabled: canRetry(),
+      slash: {
+        name: "retry",
+      },
+      run: () => {
+        void retryResponse()
         dialog.clear()
       },
     },
@@ -1307,7 +1402,7 @@ export function Session() {
                   />
                 </Show>
                 <Show when={session()?.parentID}>
-                  <SubagentFooter />
+                  <SubagentFooter retryable={canRetry()} />
                 </Show>
                 <Show when={visible()}>
                   <pluginRuntime.Slot
@@ -1471,6 +1566,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const local = useLocal()
   const { theme } = useTheme()
   const sync = useSync()
+  const keymap = useOpencodeKeymap()
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
   const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
 
@@ -1488,6 +1584,13 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
+  const retryable = createMemo(
+    () =>
+      props.last &&
+      !sync.session.get(props.message.sessionID)?.parentID &&
+      hasRetryableError(props.message) &&
+      (sync.data.session_status[props.message.sessionID]?.type ?? "idle") === "idle",
+  )
 
   return (
     <>
@@ -1543,6 +1646,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           borderColor={theme.error}
         >
           <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
+          <Show when={retryable()}>
+            <box paddingTop={1} onMouseUp={() => keymap.dispatchCommand("session.retry")}>
+              <text fg={theme.text}>Retry or /retry</text>
+            </box>
+          </Show>
         </box>
       </Show>
       <Switch>

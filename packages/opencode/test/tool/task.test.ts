@@ -98,12 +98,28 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
 
 function stubOps(opts?: {
   onPrompt?: (input: SessionPrompt.PromptInput) => void
+  onRetry?: (sessionID: SessionID) => void
   text?: string
   error?: NonNullable<SessionV1.Assistant["error"]>
   toolError?: string
 }): TaskPromptOps {
   return {
     cancel: () => Effect.void,
+    retry: (sessionID) =>
+      Effect.sync(() => {
+        opts?.onRetry?.(sessionID)
+        return reply(
+          {
+            sessionID,
+            agent: "general",
+            model: ref,
+            parts: [],
+          },
+          opts?.text ?? "done",
+          opts?.error,
+          opts?.toolError,
+        )
+      }),
     resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
     prompt: (input) =>
       Effect.sync(() => {
@@ -284,6 +300,48 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("execute retries an existing task session without prompting it", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let retried: SessionID | undefined
+      let prompted = false
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "",
+          subagent_type: "general",
+          task_id: child.id,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: stubOps({
+              text: "recovered",
+              onRetry: (sessionID) => (retried = sessionID),
+              onPrompt: () => (prompted = true),
+            }),
+            retryTask: true,
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(retried).toBe(child.id)
+      expect(prompted).toBe(false)
+      expect(result.output).toContain("recovered")
+    }),
+  )
+
   it.instance("execute surfaces child errors with a resumable task_id", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
@@ -430,6 +488,7 @@ describe("tool.task", () => {
           Effect.sync(() => {
             cancelled.resolve(sessionID)
           }),
+        retry: () => Effect.die("unexpected retry"),
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) =>
           Effect.promise(() => {
@@ -695,6 +754,7 @@ describe("tool.task", () => {
       let runs = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
+        retry: () => Effect.die("unexpected retry"),
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) => {
           if (input.sessionID === chat.id) {
