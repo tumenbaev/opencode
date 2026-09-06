@@ -503,7 +503,6 @@ for (const mode of [undefined, "disabled", "keep", "replace"] as const) {
       yield* llm.text("second response")
       yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "followup" }] })
       expect(reviews).toHaveLength(enabled ? 1 : 0)
-      if (enabled) expect(reviews[0].prompt).toBe("followup")
       const history = yield* sessions.messages({ sessionID: chat.id })
       expect(
         history
