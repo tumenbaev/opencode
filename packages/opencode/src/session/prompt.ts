@@ -1327,7 +1327,7 @@ const layer = Layer.effect(
             duration: 180000,
           })
           .pipe(Effect.ignore)
-        const proposals = yield* trimming.review({ messages, prompt, config: settings })
+        const proposals = yield* trimming.review({ messages, config: settings })
         const latest = yield* sessions.findMessage(message.info.sessionID, () => true).pipe(Effect.orDie)
         // A steer admitted during review changes what the note must preserve.
         if (Option.isNone(latest) || latest.value.info.id !== message.info.id) {
