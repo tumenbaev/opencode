@@ -4,6 +4,7 @@ import { Slug } from "@opencode-ai/core/util/slug"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import path from "path"
+import { isDeepStrictEqual } from "node:util"
 import { BackgroundJob } from "@/background/job"
 import { Decimal } from "decimal.js"
 import type { ProviderMetadata, Usage } from "@opencode-ai/llm"
@@ -457,6 +458,11 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  readonly replaceCompletedTools: (input: {
+    sessionID: SessionID
+    parts: readonly SessionV1.ToolPart[]
+    note: string
+  }) => Effect.Effect<boolean>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -874,6 +880,38 @@ const layer: Layer.Layer<
       return input.partID
     })
 
+    const replaceCompletedTools: Interface["replaceCompletedTools"] = Effect.fn("Session.replaceCompletedTools")(
+      function* (input) {
+        if (!input.note.trim() || !input.parts.length) return false
+        if (new Set(input.parts.map((part) => part.id)).size !== input.parts.length) return false
+        for (const part of input.parts) {
+          if (part.sessionID !== input.sessionID || part.state.status !== "completed") return false
+          if (part.state.time.compacted !== undefined || part.state.attachments?.length) return false
+          const current = yield* getPart({ sessionID: input.sessionID, messageID: part.messageID, partID: part.id })
+          if (!current || !isDeepStrictEqual(current, part)) return false
+        }
+        // EventV2 commits and notifies per event; an outer SQL transaction would
+        // expose notifications before commit. Keep the normal event boundary and
+        // finish an accepted group without cancellation leaving half a group.
+        // This is not crash/failure atomic: publish the preserving note first so
+        // a later removal failure leaves redundant context rather than losing it.
+        yield* Effect.gen(function* () {
+          const first = input.parts[0]
+          yield* updatePart({
+            id: first.id,
+            sessionID: first.sessionID,
+            messageID: first.messageID,
+            type: "text",
+            text: input.note,
+          })
+          for (const part of input.parts.slice(1)) {
+            yield* removePart({ sessionID: part.sessionID, messageID: part.messageID, partID: part.id })
+          }
+        }).pipe(Effect.uninterruptible)
+        return true
+      },
+    )
+
     const updatePartDelta = Effect.fnUntraced(function* (input: {
       sessionID: SessionID
       messageID: MessageID
@@ -928,6 +966,7 @@ const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      replaceCompletedTools,
       getPart,
       updatePartDelta,
       findMessage,

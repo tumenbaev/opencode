@@ -206,6 +206,69 @@ describe("step-finish token propagation via event", () => {
 })
 
 describe("Session", () => {
+  it.instance("trimming replaces an unchanged completed group through normal part events", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const source = yield* EventV2Bridge.Service
+      const created = yield* Effect.acquireRelease(session.create({}), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: created.id,
+        role: "user",
+        time: { created: 1 },
+        agent: "user",
+        model: { providerID: "test", modelID: "test" },
+      } as SessionV1.User)
+      const parts = [0, 1].map(
+        (index): SessionV1.ToolPart => ({
+          id: PartID.ascending(),
+          sessionID: created.id,
+          messageID,
+          type: "tool",
+          tool: "read",
+          callID: `call-${index}`,
+          state: {
+            status: "completed",
+            input: { path: `file-${index}` },
+            output: `output-${index}`,
+            title: "read",
+            metadata: {},
+            time: { start: 1, end: 2 },
+          },
+        }),
+      )
+      for (const part of parts) yield* session.updatePart(part)
+      const events: string[] = []
+      const unsubscribe = yield* source.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === SessionV1.Event.PartUpdated.type || event.type === SessionV1.Event.PartRemoved.type) {
+            events.push(event.type)
+          }
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+      const stale = parts.map((part) => ({ ...part, callID: "stale" }))
+      expect(yield* session.replaceCompletedTools({ sessionID: created.id, parts: stale, note: "note" })).toBe(false)
+      expect(events).toEqual([])
+      expect(
+        yield* session.replaceCompletedTools({ sessionID: created.id, parts, note: "Exact replacement note" }),
+      ).toBe(true)
+      expect(events).toEqual([SessionV1.Event.PartUpdated.type, SessionV1.Event.PartRemoved.type])
+      expect(yield* session.getPart({ sessionID: created.id, messageID, partID: parts[0].id })).toEqual({
+        id: parts[0].id,
+        sessionID: created.id,
+        messageID,
+        type: "text",
+        text: "Exact replacement note",
+      })
+      expect(yield* session.getPart({ sessionID: created.id, messageID, partID: parts[1].id })).toBeUndefined()
+      expect(yield* session.replaceCompletedTools({ sessionID: created.id, parts, note: "retry" })).toBe(false)
+    }),
+  )
+
   it.live("remove works without an instance", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
