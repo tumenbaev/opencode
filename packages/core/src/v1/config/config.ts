@@ -146,6 +146,22 @@ export const Info = Schema.Struct({
     description:
       "Thresholds for truncating tool output. When output exceeds either limit, the full text is written to the truncation directory and a preview is returned.",
   }),
+  trimming: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.optional(Schema.Boolean).annotate({
+        description: "Enable legacy context trimming (default: false)",
+      }),
+      model: Schema.optional(Schema.String).annotate({
+        description: "Trimming model in provider/model format (default: openai/gpt-5.6-luna)",
+      }),
+      variant: Schema.optional(Schema.String).annotate({
+        description: "Trimming model variant (default: high)",
+      }),
+      threshold: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1))).annotate({
+        description: "Fraction of the effective compaction threshold that enables trimming, in (0, 1] (default: 0.7)",
+      }),
+    }),
+  ).annotate({ description: "Opt-in context trimming for legacy sessions" }),
   compaction: Schema.optional(
     Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({

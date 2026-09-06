@@ -15,6 +15,7 @@ export interface Interface {
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
+    onFreshStart?: Effect.Effect<void>,
   ) => Effect.Effect<SessionV1.WithParts>
   readonly startShell: (
     sessionID: SessionID,
@@ -89,8 +90,10 @@ const layer = Layer.effect(
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
+      onFreshStart?: Effect.Effect<void>,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
+      const owner = yield* runner(sessionID, onInterrupt)
+      return yield* owner.ensureRunning(work, onFreshStart)
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
