@@ -67,6 +67,10 @@ function text(value: string): SessionV1.TextPart {
   return { id: PartID.ascending(), messageID: MessageID.ascending(), sessionID, type: "text", text: value }
 }
 
+function reasoning(value: string): SessionV1.ReasoningPart {
+  return { ...text(value), type: "reasoning", time: { start: 1 }, metadata: { signature: "opaque signature" } }
+}
+
 function layer(stream: LLM.Interface["stream"]) {
   return Trimming.layer.pipe(
     Layer.provide([
@@ -84,24 +88,35 @@ describe("trimming groups", () => {
   test("combines assistant messages across reasoning and step markers, without mutating the snapshot", () => {
     const messages = [
       user(),
+      assistant([text("before"), reasoning("before first tool")]),
       assistant([tool(8000)]),
       assistant([
-        { ...text("private reasoning"), type: "reasoning", time: { start: 1 } },
+        reasoning("between tools"),
+        reasoning("   "),
+        reasoning(""),
         { id: PartID.ascending(), messageID: MessageID.ascending(), sessionID, type: "step-start" },
         text("   "),
         tool(8000),
       ]),
+      assistant([reasoning("after last tool"), text("after"), reasoning("outside boundary")]),
     ]
     const snapshot = structuredClone(messages)
     const groups = Trimming.groups(messages)
     expect(groups).toHaveLength(1)
     expect(groups[0].parts).toHaveLength(2)
-    expect(messages[1].parts[0]).toBe(groups[0].parts[0])
+    expect(messages[2].parts[0]).toBe(groups[0].parts[0])
+    expect(groups[0].content).toEqual([
+      { type: "reasoning", text: "before first tool" },
+      { type: "tool", tool: "read", args: {}, output: "x".repeat(8000) },
+      { type: "reasoning", text: "between tools" },
+      { type: "tool", tool: "read", args: {}, output: "x".repeat(8000) },
+      { type: "reasoning", text: "after last tool" },
+    ])
     expect(groups[0].beforeTokens).toBe(4002)
     expect(messages).toEqual(snapshot)
   })
 
-  test("every nonempty text splits groups, and context includes the eventual final answer", () => {
+  test("every nonempty text splits groups, with only nearest nonempty text as context", () => {
     const messages = [
       user(),
       assistant([text("before"), tool(), text("between"), tool()]),
@@ -112,12 +127,15 @@ describe("trimming groups", () => {
     const groups = Trimming.groups(messages)
     expect(groups).toHaveLength(2)
     expect(groups[0]).toMatchObject({
-      originatingUser: "original request",
       before: "before",
       after: "between",
-      finalResponse: "final one\nfinal two",
     })
-    expect(groups[1]).toMatchObject({ before: "between", after: "final one", finalResponse: "final one\nfinal two" })
+    expect(groups[1]).toMatchObject({ before: "between", after: "final one" })
+    groups.forEach((group) => {
+      expect(group).not.toHaveProperty("originatingUser")
+      expect(group).not.toHaveProperty("finalResponse")
+      expect(messages[0].info).toBe(group.user)
+    })
   })
 
   test("user turns, including empty ones, cannot merge tools or leak final responses", () => {
@@ -130,9 +148,10 @@ describe("trimming groups", () => {
     ]
     const groups = Trimming.groups(messages)
     expect(groups).toHaveLength(2)
-    expect(groups[0].finalResponse).toBe("")
-    expect(groups[1].originatingUser).toBe("")
-    expect(groups[1].finalResponse).toBe("second turn answer")
+    expect(groups[1].before).toBe("")
+    expect(messages[2].info).toBe(groups[1].user)
+    expect(groups[1].after).toBe("second turn answer")
+    expect(Trimming.groups([user(), assistant([tool(8000)]), user(""), assistant([tool(8000)])])).toEqual([])
   })
 
   test("the 4000-token minimum includes arguments and output", () => {
@@ -141,6 +160,7 @@ describe("trimming groups", () => {
     const part = tool(0)
     part.state.input = { data: "x".repeat(16000) }
     expect(Trimming.groups([user(), assistant([part])])).toHaveLength(1)
+    expect(Trimming.groups([user(), assistant([reasoning("x".repeat(20000)), tool(100)])])).toEqual([])
   })
 
   test("skips incomplete, failed, compacted, attachment, control and error records", () => {
@@ -173,6 +193,24 @@ describe("trimming groups", () => {
     ]
     expect(Trimming.groups(messages)).toEqual([])
     expect(Trimming.groups([user(), assistant([tool(8000), pending, tool(8000)])])).toEqual([])
+    ;[compacted, attachment, pending, failed].forEach((boundary) => {
+      const groups = Trimming.groups([user(), assistant([tool(), boundary, tool()])])
+      expect(groups).toHaveLength(2)
+      groups.forEach((group) => {
+        expect(group.content).toEqual([{ type: "tool", tool: "read", args: {}, output: "x".repeat(16000) }])
+      })
+    })
+    ;[
+      assistant([reasoning("excluded"), tool()], { summary: true }),
+      assistant([reasoning("excluded"), tool()], {
+        error: { name: "MessageAbortedError", data: { message: "cancelled" } },
+      }),
+      assistant([
+        { id: PartID.ascending(), messageID: MessageID.ascending(), sessionID, type: "compaction", auto: true },
+      ]),
+    ].forEach((boundary) => {
+      expect(Trimming.groups([user(), assistant([tool(8000)]), boundary, assistant([tool(8000)])])).toEqual([])
+    })
   })
 })
 
@@ -227,7 +265,6 @@ it.effect("gathers all successful proposals while failed and invalid reviews sta
       const trimming = yield* Trimming.Service
       const proposals = yield* trimming.review({
         messages,
-        prompt: "new followup",
         config: { enabled: true, variant: "custom" },
       })
       expect(proposals.map((proposal) => proposal.note)).toEqual(["first", "last"])
@@ -240,7 +277,14 @@ it.effect("gathers all successful proposals while failed and invalid reviews sta
         expect(call.small).toBeUndefined()
         expect(call.user.model.variant).toBe("custom")
         expect(call.model.id).toBe(ref.modelID)
-        expect(call.messages[0].content).toContain("new followup")
+        const group = Trimming.groups(messages).find((group) =>
+          String(call.messages[0].content).includes(`"before":${JSON.stringify(group.before)}`),
+        )!
+        expect(JSON.parse(String(call.messages[0].content))).toEqual({
+          before: group.before,
+          content: [{ type: "tool", tool: "read", args: {}, output: "x".repeat(16000) }],
+          after: group.after,
+        })
       })
     }).pipe(
       Effect.provide(
@@ -260,6 +304,53 @@ it.effect("gathers all successful proposals while failed and invalid reviews sta
   }),
 )
 
+it.effect("requests contain only local text and ordered readable reasoning, preserving the snapshot", () =>
+  Effect.gen(function* () {
+    const calls: LLM.StreamInput[] = []
+    const messages = [
+      user("nonlocal original request"),
+      assistant([text("before"), reasoning("plan")]),
+      assistant([tool(), reasoning("result"), reasoning(""), text("after")]),
+      assistant([text("nonlocal final answer")], { finish: "stop" }),
+      user("new followup"),
+      assistant([tool(), reasoning("last thought")]),
+      user("nearest followup"),
+    ]
+    const snapshot = structuredClone(messages)
+    yield* Effect.gen(function* () {
+      const trimming = yield* Trimming.Service
+      yield* trimming.review({ messages, config: { enabled: true } })
+    }).pipe(
+      Effect.provide(
+        layer((input) => {
+          calls.push(input)
+          return response('{"action":"replace","note":"short note"}')
+        }),
+      ),
+    )
+    expect(calls.map((call) => JSON.parse(String(call.messages[0].content)))).toEqual([
+      {
+        before: "before",
+        content: [
+          { type: "reasoning", text: "plan" },
+          { type: "tool", tool: "read", args: {}, output: "x".repeat(16000) },
+          { type: "reasoning", text: "result" },
+        ],
+        after: "after",
+      },
+      {
+        before: "new followup",
+        content: [
+          { type: "tool", tool: "read", args: {}, output: "x".repeat(16000) },
+          { type: "reasoning", text: "last thought" },
+        ],
+        after: "nearest followup",
+      },
+    ])
+    expect(messages).toEqual(snapshot)
+  }),
+)
+
 it.effect("interruption cancels reviews instead of becoming keep", () =>
   Effect.gen(function* () {
     const started = yield* Deferred.make<void>()
@@ -267,7 +358,6 @@ it.effect("interruption cancels reviews instead of becoming keep", () =>
       const trimming = yield* Trimming.Service
       return yield* trimming.review({
         messages: [user(), assistant([tool()])],
-        prompt: "next",
         config: { enabled: true },
       })
     }).pipe(
@@ -302,7 +392,6 @@ it.effect("runs at most eight reviews concurrently and drains every candidate", 
           user(),
           assistant(Array.from({ length: 12 }, (_, index) => [text(`boundary ${index}`), tool()]).flat()),
         ],
-        prompt: "next",
         config: { enabled: true },
       })
     }).pipe(
@@ -345,7 +434,6 @@ it.effect("does not accept a valid-looking note from an unfinished or truncated 
     const trimming = yield* Trimming.Service
     const proposals = yield* trimming.review({
       messages: [user(), assistant([tool(), text("boundary"), tool()])],
-      prompt: "next",
       config: { enabled: true },
     })
     expect(proposals).toEqual([])
@@ -369,8 +457,17 @@ it.effect("keeps oversized groups and non-shrinking replacements unchanged", () 
     yield* Effect.gen(function* () {
       const trimming = yield* Trimming.Service
       const proposals = yield* trimming.review({
-        messages: [user(), assistant([tool(800000), text("boundary"), tool()])],
-        prompt: "next",
+        messages: [
+          user(),
+          assistant([
+            tool(800000),
+            text("reasoning boundary"),
+            reasoning("x".repeat(800000)),
+            tool(),
+            text("boundary"),
+            tool(),
+          ]),
+        ],
         config: { enabled: true },
       })
       expect(calls).toHaveLength(1)
@@ -393,7 +490,6 @@ it.effect("a timed-out review keeps its group without discarding successful revi
       const trimming = yield* Trimming.Service
       return yield* trimming.review({
         messages: [user(), assistant([tool(), text("slow"), tool()])],
-        prompt: "next",
         config: { enabled: true },
       })
     }).pipe(
