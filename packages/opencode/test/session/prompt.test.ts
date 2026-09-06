@@ -18,6 +18,7 @@ import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
+import { Trimming } from "@/plugin/trimming"
 import { Provider as ProviderSvc } from "@/provider/provider"
 import { Env } from "../../src/env"
 import { Git } from "../../src/git"
@@ -221,7 +222,11 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  trimming?: Trimming.Interface
+}) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
@@ -232,6 +237,8 @@ function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processo
   if (input?.processor === "blocking") {
     return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]])
   }
+  if (input?.trimming)
+    return LayerNode.compile(root, [...replacements, [Trimming.node, Layer.succeed(Trimming.Service, input.trimming)]])
   return LayerNode.compile(root, replacements)
 }
 
@@ -443,6 +450,93 @@ const boot = Effect.fn("test.boot")(function* (input?: { title?: string }) {
 })
 
 // Loop semantics
+
+for (const mode of [undefined, "disabled", "keep", "replace"] as const) {
+  const enabled = mode === "keep" || mode === "replace"
+  const note = "The read confirmed the expected configuration; no changes were needed."
+  const reviews: Trimming.Input[] = []
+  const trimming = testEffect(
+    makeHttp({
+      trimming: {
+        review: (input) =>
+          Effect.sync(() => {
+            reviews.push(input)
+            return Trimming.groups(input.messages).map((group) => ({
+              parts: group.parts,
+              note,
+              beforeTokens: group.beforeTokens,
+              afterTokens: mode === "replace" ? 20 : group.beforeTokens,
+            }))
+          }),
+      },
+    }),
+  )
+  trimming.instance(`prompt trimming ${mode ?? "omitted"}: gates followups and applies only smaller proposals`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        ...(mode === undefined ? {} : { trimming: { enabled, threshold: 0.01 } }),
+      }))
+      const { prompt, sessions, chat } = yield* boot()
+      yield* llm.text("first response")
+      const first = yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "first" }] })
+      expect(reviews).toHaveLength(0)
+      if (first.info.role !== "assistant") throw new Error("Expected assistant")
+      // Exceed even the default trimming threshold so omitted config proves opt-in behavior.
+      yield* sessions.updateMessage({ ...first.info, tokens: { ...first.info.tokens, input: 75000 } })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        sessionID: chat.id,
+        messageID: first.info.id,
+        type: "tool",
+        tool: "read",
+        callID: "trimming-test",
+        state: {
+          status: "completed",
+          input: {},
+          output: "x".repeat(20000),
+          title: "read",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      })
+      yield* llm.text("second response")
+      yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "followup" }] })
+      expect(reviews).toHaveLength(enabled ? 1 : 0)
+      if (enabled) expect(reviews[0].prompt).toBe("followup")
+      const history = yield* sessions.messages({ sessionID: chat.id })
+      expect(
+        history
+          .flatMap((message) => message.parts)
+          .some(
+            (part) =>
+              part.type === "tool" &&
+              part.callID === "trimming-test" &&
+              part.state.status === "completed" &&
+              part.state.output === "x".repeat(20000),
+          ),
+      ).toBe(mode !== "replace")
+      const parts = history.flatMap((message) => message.parts)
+      expect(parts.some((part) => part.type === "text" && part.text === note)).toBe(mode === "replace")
+      const inputs = yield* llm.inputs
+      expect(inputs).toHaveLength(2)
+      const messages = JSON.stringify(inputs[1].messages)
+      expect(messages.includes(note)).toBe(mode === "replace")
+      expect(messages.includes("x".repeat(20000))).toBe(mode !== "replace")
+      if (mode === "replace") {
+        expect(parts.some((part) => part.type === "tool")).toBe(false)
+        expect(messages).not.toContain("trimming-test")
+        expect(messages).not.toContain('"tool_calls"')
+        expect(messages).not.toContain('"role":"tool"')
+      }
+      // Trimming progress and token savings belong to UI events, not conversation text.
+      expect(JSON.stringify(history)).not.toContain("Context trimming")
+      expect(messages).not.toContain("Context trimming")
+      yield* prompt.loop({ sessionID: chat.id })
+      expect(reviews).toHaveLength(enabled ? 1 : 0)
+    }),
+  )
+}
 
 noLLMServer.instance(
   "loop exits immediately when last assistant has stop finish",

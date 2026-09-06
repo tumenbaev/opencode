@@ -12,6 +12,63 @@ describe("Runner", () => {
   // --- ensureRunning semantics ---
 
   it.live(
+    "fresh boundary precedes work, excludes joins, and is cancelled with its owner",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const runner = Runner.make<string>(scope, { onInterrupt: Effect.succeed("cancelled") })
+      const started = yield* Deferred.make<void>()
+      const calls = yield* Ref.make<string[]>([])
+      const first = yield* runner
+        .ensureRunning(
+          Ref.update(calls, (items) => [...items, "work"]).pipe(Effect.as("done")),
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      expect(runner.busy).toBe(true)
+      const joined = yield* runner
+        .ensureRunning(
+          Effect.succeed("joined"),
+          Ref.update(calls, (items) => [...items, "joined boundary"]),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* runner.cancel
+      expect(yield* Fiber.join(first)).toBe("cancelled")
+      expect(yield* Fiber.join(joined)).toBe("cancelled")
+      expect(yield* Ref.get(calls)).toEqual([])
+      yield* runner.ensureRunning(
+        Ref.update(calls, (items) => [...items, "work"]).pipe(Effect.as("done")),
+        Ref.update(calls, (items) => [...items, "boundary"]),
+      )
+      expect(yield* Ref.get(calls)).toEqual(["boundary", "work"])
+    }),
+  )
+
+  it.live(
+    "shell handoff does not consume the fresh idle boundary",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const runner = Runner.make<string>(scope)
+      const release = yield* Deferred.make<void>()
+      const calls = yield* Ref.make(0)
+      const shell = yield* runner.startShell(Deferred.await(release).pipe(Effect.as("shell"))).pipe(Effect.forkChild)
+      yield* waitForState(runner, "Shell")
+      const pending = yield* runner
+        .ensureRunning(
+          Effect.succeed("done"),
+          Ref.update(calls, (n) => n + 1),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitForState(runner, "ShellThenRun")
+      yield* Deferred.succeed(release, undefined)
+      expect(yield* Fiber.join(shell)).toBe("shell")
+      expect(yield* Fiber.join(pending)).toBe("done")
+      expect(yield* Ref.get(calls)).toBe(0)
+    }),
+  )
+
+  it.live(
     "ensureRunning starts work and returns result",
     Effect.gen(function* () {
       const s = yield* Scope.Scope

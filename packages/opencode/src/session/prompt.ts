@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
+import { isDeepStrictEqual } from "node:util"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -16,6 +17,9 @@ import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
+import { Trimming } from "@/plugin/trimming"
+import { tokenCount, usable } from "./overflow"
+import { Token } from "@/util/token"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
@@ -128,6 +132,7 @@ const layer = Layer.effect(
     const processor = yield* SessionProcessor.Service
     const compaction = yield* SessionCompaction.Service
     const plugin = yield* Plugin.Service
+    const trimming = yield* Trimming.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
     const permission = yield* Permission.Service
@@ -1144,8 +1149,8 @@ const layer = Layer.effect(
       const sh = Shell.preferred(cfg.shell)
       const results = yield* Effect.promise(() =>
         Promise.all(
-          shellMatches.map(async ([, shellCommand]) =>
-            (await Process.text([shellCommand], { shell: sh, nothrow: true })).text,
+          shellMatches.map(
+            async ([, shellCommand]) => (await Process.text([shellCommand], { shell: sh, nothrow: true })).text,
           ),
         ),
       )
@@ -1223,6 +1228,21 @@ const layer = Layer.effect(
       const handoff = yield* maybeResearchBuild(input)
       const next = Option.isSome(handoff) ? handoff.value : input
       const session = yield* sessions.get(next.sessionID).pipe(Effect.orDie)
+      // Admission provenance is captured before persisting the new prompt. Only
+      // the runner's Idle transition may consume it; joins and shell handoffs cannot.
+      const enabled =
+        next.noReply !== true &&
+        Trimming.shouldReview({ config: { ...Trimming.defaults, ...(yield* config.get()).trimming } })
+      const idle = enabled ? yield* state.assertNotBusy(next.sessionID).pipe(Effect.option) : Option.none()
+      const previous = Option.isSome(idle)
+        ? yield* sessions.findMessage(next.sessionID, () => true).pipe(Effect.orDie)
+        : Option.none()
+      const reused =
+        Option.isSome(previous) && next.messageID
+          ? yield* sessions
+              .findMessage(next.sessionID, (message) => message.info.id === next.messageID)
+              .pipe(Effect.orDie)
+          : Option.none()
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(next)
       yield* sessions.touch(next.sessionID)
@@ -1240,7 +1260,14 @@ const layer = Layer.effect(
       }
 
       if (next.noReply === true) return message
-      return yield* loop({ sessionID: next.sessionID })
+      return yield* state.ensureRunning(
+        next.sessionID,
+        lastAssistant(next.sessionID),
+        runLoop(next.sessionID),
+        Option.isSome(idle) && Option.isNone(reused) && Option.isSome(previous)
+          ? trimFollowup(message, previous.value)
+          : undefined,
+      )
     }, Effect.catch(Effect.die))
 
     const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
@@ -1269,6 +1296,118 @@ const layer = Layer.effect(
       }
       return yield* loop({ sessionID })
     })
+
+    const trimFollowup = Effect.fn("SessionPrompt.trimFollowup")(
+      function* (message: SessionV1.WithParts, previous: SessionV1.WithParts) {
+        if (message.info.role !== "user" || previous.info.role !== "assistant") return
+        if (previous.info.error || previous.info.summary || !previous.info.time.completed) return
+        if (!previous.info.finish || ["tool-calls", "unknown"].includes(previous.info.finish)) return
+        const prompt = message.parts
+          .flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : []))
+          .join("\n")
+        if (!prompt.trim() || message.parts.some((part) => part.type === "compaction" || part.type === "subtask"))
+          return
+        const cfg = yield* config.get()
+        const settings = { ...Trimming.defaults, ...cfg.trimming }
+        if (!Trimming.shouldReview({ config: settings })) return
+        const model = yield* provider.getModel(message.info.model.providerID, message.info.model.modelID)
+        const threshold = usable({ cfg, model, outputTokenMax: flags.outputTokenMax })
+        if (threshold <= 0 || tokenCount(previous.info.tokens) < settings.threshold * threshold) return
+        const messages = yield* MessageV2.filterCompactedEffect(message.info.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        if (messages.at(-1)?.info.id !== message.info.id || messages.at(-2)?.info.id !== previous.info.id) return
+        if (!Trimming.groups(messages).length) return
+        const before = Token.estimate(JSON.stringify(yield* MessageV2.toModelMessagesEffect(messages, model)))
+        yield* status.set(message.info.sessionID, { type: "busy" })
+        yield* events
+          .publish(TuiEvent.ToastShow, {
+            message: `Trimming context (~${Math.round(before / 1000)}k tokens)…`,
+            variant: "info",
+            duration: 180000,
+          })
+          .pipe(Effect.ignore)
+        const proposals = yield* trimming.review({ messages, prompt, config: settings })
+        const latest = yield* sessions.findMessage(message.info.sessionID, () => true).pipe(Effect.orDie)
+        // A steer admitted during review changes what the note must preserve.
+        if (Option.isNone(latest) || latest.value.info.id !== message.info.id) {
+          yield* events
+            .publish(TuiEvent.ToastShow, {
+              message: "Context trimming skipped: a newer prompt arrived",
+              variant: "info",
+              duration: 5000,
+            })
+            .pipe(Effect.ignore)
+          return
+        }
+        const plan = proposals.filter((proposal) => proposal.afterTokens < proposal.beforeTokens)
+        const parts = plan.flatMap((proposal) => proposal.parts)
+        if (new Set(parts.map((part) => part.id)).size !== parts.length)
+          return yield* Effect.die("Overlapping trimming proposals")
+        for (const proposal of plan) {
+          // Proposals are authority only over parts in the supplied snapshot.
+          if (
+            !proposal.note.trim() ||
+            !proposal.parts.length ||
+            !proposal.parts.every((part) => messages.some((msg) => msg.parts.includes(part)))
+          )
+            return yield* Effect.die("Invalid trimming proposal")
+        }
+        // Validate the entire plan before editing; each accepted group checks again
+        // at its own write boundary because EventV2 has no multi-event transaction.
+        for (const part of parts) {
+          const current = yield* sessions.getPart({
+            sessionID: message.info.sessionID,
+            messageID: part.messageID,
+            partID: part.id,
+          })
+          if (
+            part.sessionID !== message.info.sessionID ||
+            part.state.status !== "completed" ||
+            part.state.time.compacted !== undefined ||
+            part.state.attachments?.length ||
+            !isDeepStrictEqual(current, part)
+          )
+            return yield* Effect.die("Trimming plan is no longer current")
+        }
+        for (const proposal of plan) {
+          yield* sessions.replaceCompletedTools({
+            sessionID: message.info.sessionID,
+            parts: proposal.parts,
+            note: proposal.note,
+          })
+        }
+        const after = yield* MessageV2.filterCompactedEffect(message.info.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        const estimate = Token.estimate(JSON.stringify(yield* MessageV2.toModelMessagesEffect(after, model)))
+        yield* events
+          .publish(TuiEvent.ToastShow, {
+            message:
+              estimate < before
+                ? `Context trimming complete: ~${Math.round(before / 1000)}k → ~${Math.round(estimate / 1000)}k tokens`
+                : "Context trimming finished: context unchanged",
+            variant: estimate < before ? "success" : "info",
+            duration: 5000,
+          })
+          .pipe(Effect.ignore)
+      },
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* events
+            .publish(TuiEvent.ToastShow, {
+              message: Cause.hasInterrupts(cause)
+                ? "Context trimming cancelled"
+                : "Context trimming failed; continuing with retained context",
+              variant: Cause.hasInterrupts(cause) ? "info" : "warning",
+              duration: 5000,
+            })
+            .pipe(Effect.ignore)
+          if (Cause.hasInterrupts(cause)) return yield* Effect.interrupt
+          yield* Effect.logWarning("Context trimming skipped", { cause })
+        }),
+      ),
+    )
 
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
@@ -1765,6 +1904,7 @@ export const node = LayerNode.make({
     SessionProcessor.node,
     SessionCompaction.node,
     Plugin.node,
+    Trimming.node,
     Command.node,
     Config.node,
     Permission.node,
