@@ -92,6 +92,7 @@ export const SessionPaths = {
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
+  trim: `${root}/:sessionID/trim`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   retry: `${root}/:sessionID/retry`,
@@ -312,6 +313,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.summarize",
             summary: "Summarize session",
             description: "Generate a concise summary of the session using AI compaction to preserve key information.",
+          }),
+        ),
+        HttpApiEndpoint.post("trim", SessionPaths.trim, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Trimming finished or skipped"),
+          error: ApiNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.trim",
+            summary: "Trim session context",
+            description:
+              "Review historical tool payloads without creating a message or assistant turn. Active sessions are unchanged.",
           }),
         ),
         HttpApiEndpoint.post("prompt", SessionPaths.prompt, {

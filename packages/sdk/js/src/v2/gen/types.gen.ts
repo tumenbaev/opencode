@@ -2016,6 +2016,15 @@ export type Config = {
     max_lines?: number
     max_bytes?: number
   }
+  trimming?: {
+    enabled?: boolean
+    model?: string
+    variant?: string
+    /**
+     * Fraction of the effective compaction threshold that enables trimming, in (0, 1] (default: 0.7)
+     */
+    threshold?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
   compaction?: {
     auto?: boolean
     prune?: boolean
@@ -10144,6 +10153,40 @@ export type SessionSummarizeResponses = {
 }
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
+
+export type SessionTrimData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/trim"
+}
+
+export type SessionTrimErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionTrimError = SessionTrimErrors[keyof SessionTrimErrors]
+
+export type SessionTrimResponses = {
+  /**
+   * Trimming finished or skipped
+   */
+  200: boolean
+}
+
+export type SessionTrimResponse = SessionTrimResponses[keyof SessionTrimResponses]
 
 export type SessionPromptAsyncData = {
   body?: {

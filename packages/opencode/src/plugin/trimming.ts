@@ -77,7 +77,7 @@ export function shouldReview(input: Pick<Input, "config" | "usage">) {
   )
 }
 
-/** Text delimits groups, not assistant-message or provider-step boundaries. */
+/** Text delimits groups, not assistant-message, provider-step, or snapshot-patch boundaries. */
 export function groups(messages: readonly SessionV1.WithParts[]): Group[] {
   // Message sentinels preserve empty user turns as ownership boundaries too.
   const entries = messages.flatMap((message) => [
@@ -141,7 +141,8 @@ export function groups(messages: readonly SessionV1.WithParts[]): Group[] {
       if (part.text.trim()) state.content.push({ type: "reasoning", text: part.text })
       return
     }
-    if (part.type === "step-start" || part.type === "step-finish" || part.type === "text") return
+    // Snapshot patches and step markers remain untouched, outside reviewer content and tool targets.
+    if (part.type === "step-start" || part.type === "step-finish" || part.type === "patch" || part.type === "text") return
     if (
       part.type !== "tool" ||
       part.state.status !== "completed" ||

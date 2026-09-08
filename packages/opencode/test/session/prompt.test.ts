@@ -451,6 +451,92 @@ const boot = Effect.fn("test.boot")(function* (input?: { title?: string }) {
 
 // Loop semantics
 
+for (const enabled of [false, true]) {
+  it.instance(`manual trimming bypasses enabled=${enabled} and low usage without an assistant turn`, () =>
+    Effect.gen(function* () {
+      const server = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        trimming: { enabled, model: "test/test-model", variant: "high", threshold: 0.7 },
+      }))
+      const context = yield* boot()
+      yield* server.llm.text("first response")
+      const first = yield* context.prompt.prompt({
+        sessionID: context.chat.id,
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      if (first.info.role !== "assistant") throw new Error("Expected assistant")
+      yield* context.sessions.updateMessage({ ...first.info, tokens: { ...first.info.tokens, input: 1 } })
+      yield* context.sessions.updatePart({
+        id: PartID.ascending(),
+        sessionID: context.chat.id,
+        messageID: first.info.id,
+        type: "tool",
+        tool: "read",
+        callID: "manual-trim",
+        state: {
+          status: "completed",
+          input: {},
+          output: "x".repeat(20000),
+          title: "read",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      })
+      const before = yield* context.sessions.messages({ sessionID: context.chat.id })
+      yield* server.llm.text(JSON.stringify({ action: "replace", note: "The file contained the expected data." }))
+      yield* context.prompt.trim(context.chat.id)
+      const after = yield* context.sessions.messages({ sessionID: context.chat.id })
+      expect(after.map((message) => message.info)).toEqual(before.map((message) => message.info))
+      expect(after.flatMap((message) => message.parts).some((part) => part.type === "tool")).toBe(false)
+      expect(
+        after
+          .flatMap((message) => message.parts)
+          .some((part) => part.type === "text" && part.text === "The file contained the expected data."),
+      ).toBe(true)
+      expect(yield* server.llm.inputs).toHaveLength(2)
+      const status = yield* SessionStatus.Service
+      expect(yield* status.get(context.chat.id)).toEqual({ type: "idle" })
+      // No candidates must not invoke either the reviewer or the assistant.
+      yield* context.prompt.trim(context.chat.id)
+      expect(yield* server.llm.inputs).toHaveLength(2)
+    }),
+  )
+}
+
+it.instance("manual trimming is an immediate no-op during active execution", () =>
+  Effect.gen(function* () {
+    const server = yield* useServerConfig(providerCfg)
+    const context = yield* boot()
+    yield* server.llm.text("first response")
+    const first = yield* context.prompt.prompt({
+      sessionID: context.chat.id,
+      model: ref,
+      parts: [{ type: "text", text: "first" }],
+    })
+    const before = yield* context.sessions.messages({ sessionID: context.chat.id })
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const active = yield* context.run
+      .ensureRunning(
+        context.chat.id,
+        Effect.succeed(first),
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+          return first
+        }),
+      )
+      .pipe(Effect.forkChild)
+    yield* Deferred.await(started)
+    yield* context.prompt.trim(context.chat.id).pipe(Effect.timeout("2 seconds"))
+    expect(yield* context.sessions.messages({ sessionID: context.chat.id })).toEqual(before)
+    expect(yield* server.llm.inputs).toHaveLength(1)
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(active)
+  }),
+)
+
 for (const mode of [undefined, "disabled", "keep", "replace"] as const) {
   const enabled = mode === "keep" || mode === "replace"
   const note = "The read confirmed the expected configuration; no changes were needed."

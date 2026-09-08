@@ -1548,6 +1548,24 @@ const scenarios: Scenario[] = [
       "status",
     ),
   http.protected
+    .post("/session/{sessionID}/trim", "session.trim")
+    .preserveDatabase()
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Trim empty session" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/trim", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .jsonEffect(
+      200,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          check(body === true, "trim should return true")
+          check((yield* ctx.messages(ctx.state.id)).length === 0, "trim must not add messages")
+        }),
+      "status",
+    ),
+  http.protected
     .post("/session/{sessionID}/summarize", "session.summarize")
     .preserveDatabase()
     .withLlm()

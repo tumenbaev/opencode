@@ -206,7 +206,7 @@ describe("step-finish token propagation via event", () => {
 })
 
 describe("Session", () => {
-  it.instance("trimming replaces an unchanged completed group through normal part events", () =>
+  it.instance("trimming replaces noncontiguous tools through normal part events, preserving snapshot patches", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
       const source = yield* EventV2Bridge.Service
@@ -222,6 +222,14 @@ describe("Session", () => {
         agent: "user",
         model: { providerID: "test", modelID: "test" },
       } as SessionV1.User)
+      const patch: SessionV1.PatchPart = {
+        id: PartID.ascending(),
+        sessionID: created.id,
+        messageID,
+        type: "patch",
+        hash: "snapshot-hash",
+        files: ["file-0"],
+      }
       const parts = [0, 1].map(
         (index): SessionV1.ToolPart => ({
           id: PartID.ascending(),
@@ -240,7 +248,7 @@ describe("Session", () => {
           },
         }),
       )
-      for (const part of parts) yield* session.updatePart(part)
+      for (const part of [parts[0], patch, parts[1]]) yield* session.updatePart(part)
       const events: string[] = []
       const unsubscribe = yield* source.listen((event) =>
         Effect.sync(() => {
@@ -265,6 +273,7 @@ describe("Session", () => {
         text: "Exact replacement note",
       })
       expect(yield* session.getPart({ sessionID: created.id, messageID, partID: parts[1].id })).toBeUndefined()
+      expect(yield* session.getPart({ sessionID: created.id, messageID, partID: patch.id })).toEqual(patch)
       expect(yield* session.replaceCompletedTools({ sessionID: created.id, parts, note: "retry" })).toBe(false)
     }),
   )
