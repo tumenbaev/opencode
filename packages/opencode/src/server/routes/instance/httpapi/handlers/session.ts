@@ -446,6 +446,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("share", share)
       .handle("unshare", unshare)
       .handle("summarize", summarize)
+      .handle("trim", (ctx) =>
+        Effect.gen(function* () {
+          yield* requireSession(ctx.params.sessionID)
+          yield* promptSvc.trim(ctx.params.sessionID)
+          return true
+        }),
+      )
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("retry", retry)

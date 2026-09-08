@@ -21,7 +21,23 @@ Add this to `opencode.json`:
 
 Only `enabled` is needed to use the displayed defaults. The model uses OpenCode's
 existing provider/authentication runtime, including Codex OAuth. There is no
-fallback model or helper session. Trimming is disabled when the section is absent.
+fallback model or helper session. Automatic trimming is disabled when the section is absent.
+
+## Manual trimming
+
+The built-in TUI `/trim` action (also `POST /session/:sessionID/trim`) reviews the
+current session without adding a user message or starting an assistant turn.
+It silently does nothing when execution is active. Otherwise it acquires the
+existing exclusive execution ownership for review and application; prompts arriving
+during review can run afterward.
+
+Manual trimming ignores `enabled` and the context-usage threshold; `enabled` controls
+automatic trimming only. It uses the configured reviewer model and variant, with
+the same defaults, 4,000-token group minimum, and safety checks as automatic trimming.
+Progress and results use the existing toasts; no candidates produces
+`No eligible context to trim`. Freshness is anchored to the snapshot's latest message
+ID, including when that message is an assistant response. New messages invalidate
+the review. No transcript message is added for progress or results.
 
 ## Behavior
 

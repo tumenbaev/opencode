@@ -680,6 +680,21 @@ export function Session() {
       },
     },
     {
+      title: "Trim session context",
+      value: "session.trim",
+      category: "Session",
+      slash: { name: "trim" },
+      run: () => {
+        dialog.clear()
+        void sdk.client.session.trim({ sessionID: route.sessionID }, { throwOnError: true }).catch((error) => {
+          toast.show({
+            message: error instanceof Error ? error.message : "Failed to trim session context",
+            variant: "error",
+          })
+        })
+      },
+    },
+    {
       title: "Unshare session",
       value: "session.unshare",
       category: "Session",

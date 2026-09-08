@@ -107,6 +107,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 }
 
 export interface Interface {
+  readonly trim: (sessionID: SessionID) => Effect.Effect<void>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly retry: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts, RetryError | Session.BusyError>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -1297,117 +1298,171 @@ const layer = Layer.effect(
       return yield* loop({ sessionID })
     })
 
-    const trimFollowup = Effect.fn("SessionPrompt.trimFollowup")(
-      function* (message: SessionV1.WithParts, previous: SessionV1.WithParts) {
-        if (message.info.role !== "user" || previous.info.role !== "assistant") return
-        if (previous.info.error || previous.info.summary || !previous.info.time.completed) return
-        if (!previous.info.finish || ["tool-calls", "unknown"].includes(previous.info.finish)) return
-        const prompt = message.parts
-          .flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : []))
-          .join("\n")
-        if (!prompt.trim() || message.parts.some((part) => part.type === "compaction" || part.type === "subtask"))
-          return
-        const cfg = yield* config.get()
-        const settings = { ...Trimming.defaults, ...cfg.trimming }
-        if (!Trimming.shouldReview({ config: settings })) return
-        const model = yield* provider.getModel(message.info.model.providerID, message.info.model.modelID)
-        const threshold = usable({ cfg, model, outputTokenMax: flags.outputTokenMax })
-        if (threshold <= 0 || tokenCount(previous.info.tokens) < settings.threshold * threshold) return
-        const messages = yield* MessageV2.filterCompactedEffect(message.info.sessionID).pipe(
-          Effect.provideService(Database.Service, database),
-        )
-        if (messages.at(-1)?.info.id !== message.info.id || messages.at(-2)?.info.id !== previous.info.id) return
-        if (!Trimming.groups(messages).length) return
-        const before = Token.estimate(JSON.stringify(yield* MessageV2.toModelMessagesEffect(messages, model)))
-        yield* status.set(message.info.sessionID, { type: "busy" })
+    const trimFailure = (cause: Cause.Cause<unknown>) =>
+      Effect.gen(function* () {
         yield* events
           .publish(TuiEvent.ToastShow, {
-            message: `Trimming context (~${Math.round(before / 1000)}k tokens)…`,
-            variant: "info",
-            duration: 180000,
-          })
-          .pipe(Effect.ignore)
-        const proposals = yield* trimming.review({ messages, config: settings })
-        const latest = yield* sessions.findMessage(message.info.sessionID, () => true).pipe(Effect.orDie)
-        // A steer admitted during review changes what the note must preserve.
-        if (Option.isNone(latest) || latest.value.info.id !== message.info.id) {
-          yield* events
-            .publish(TuiEvent.ToastShow, {
-              message: "Context trimming skipped: a newer prompt arrived",
-              variant: "info",
-              duration: 5000,
-            })
-            .pipe(Effect.ignore)
-          return
-        }
-        const plan = proposals.filter((proposal) => proposal.afterTokens < proposal.beforeTokens)
-        const parts = plan.flatMap((proposal) => proposal.parts)
-        if (new Set(parts.map((part) => part.id)).size !== parts.length)
-          return yield* Effect.die("Overlapping trimming proposals")
-        for (const proposal of plan) {
-          // Proposals are authority only over parts in the supplied snapshot.
-          if (
-            !proposal.note.trim() ||
-            !proposal.parts.length ||
-            !proposal.parts.every((part) => messages.some((msg) => msg.parts.includes(part)))
-          )
-            return yield* Effect.die("Invalid trimming proposal")
-        }
-        // Validate the entire plan before editing; each accepted group checks again
-        // at its own write boundary because EventV2 has no multi-event transaction.
-        for (const part of parts) {
-          const current = yield* sessions.getPart({
-            sessionID: message.info.sessionID,
-            messageID: part.messageID,
-            partID: part.id,
-          })
-          if (
-            part.sessionID !== message.info.sessionID ||
-            part.state.status !== "completed" ||
-            part.state.time.compacted !== undefined ||
-            part.state.attachments?.length ||
-            !isDeepStrictEqual(current, part)
-          )
-            return yield* Effect.die("Trimming plan is no longer current")
-        }
-        for (const proposal of plan) {
-          yield* sessions.replaceCompletedTools({
-            sessionID: message.info.sessionID,
-            parts: proposal.parts,
-            note: proposal.note,
-          })
-        }
-        const after = yield* MessageV2.filterCompactedEffect(message.info.sessionID).pipe(
-          Effect.provideService(Database.Service, database),
-        )
-        const estimate = Token.estimate(JSON.stringify(yield* MessageV2.toModelMessagesEffect(after, model)))
-        yield* events
-          .publish(TuiEvent.ToastShow, {
-            message:
-              estimate < before
-                ? `Context trimming complete: ~${Math.round(before / 1000)}k → ~${Math.round(estimate / 1000)}k tokens`
-                : "Context trimming finished: context unchanged",
-            variant: estimate < before ? "success" : "info",
+            message: Cause.hasInterrupts(cause)
+              ? "Context trimming cancelled"
+              : "Context trimming failed; continuing with retained context",
+            variant: Cause.hasInterrupts(cause) ? "info" : "warning",
             duration: 5000,
           })
           .pipe(Effect.ignore)
-      },
-      Effect.catchCause((cause) =>
-        Effect.gen(function* () {
-          yield* events
-            .publish(TuiEvent.ToastShow, {
-              message: Cause.hasInterrupts(cause)
-                ? "Context trimming cancelled"
-                : "Context trimming failed; continuing with retained context",
-              variant: Cause.hasInterrupts(cause) ? "info" : "warning",
-              duration: 5000,
-            })
-            .pipe(Effect.ignore)
-          if (Cause.hasInterrupts(cause)) return yield* Effect.interrupt
-          yield* Effect.logWarning("Context trimming skipped", { cause })
-        }),
-      ),
-    )
+        if (Cause.hasInterrupts(cause)) return yield* Effect.interrupt
+        yield* Effect.logWarning("Context trimming skipped", { cause })
+      })
+
+    const trimFollowup = Effect.fn("SessionPrompt.trimFollowup")(function* (
+      message: SessionV1.WithParts,
+      previous: SessionV1.WithParts,
+    ) {
+      if (message.info.role !== "user" || previous.info.role !== "assistant") return
+      if (previous.info.error || previous.info.summary || !previous.info.time.completed) return
+      if (!previous.info.finish || ["tool-calls", "unknown"].includes(previous.info.finish)) return
+      const prompt = message.parts
+        .flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : []))
+        .join("\n")
+      if (!prompt.trim() || message.parts.some((part) => part.type === "compaction" || part.type === "subtask")) return
+      const cfg = yield* config.get()
+      const settings = { ...Trimming.defaults, ...cfg.trimming }
+      if (!Trimming.shouldReview({ config: settings })) return
+      const model = yield* provider.getModel(message.info.model.providerID, message.info.model.modelID)
+      const threshold = usable({ cfg, model, outputTokenMax: flags.outputTokenMax })
+      if (threshold <= 0 || tokenCount(previous.info.tokens) < settings.threshold * threshold) return
+      const messages = yield* MessageV2.filterCompactedEffect(message.info.sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+      )
+      if (messages.at(-1)?.info.id !== message.info.id || messages.at(-2)?.info.id !== previous.info.id) return
+      yield* trimSnapshot(message, messages, model, settings)
+    }, Effect.catchCause(trimFailure))
+
+    const noEligibleContext = events
+      .publish(TuiEvent.ToastShow, {
+        message: "No eligible context to trim",
+        variant: "info",
+        duration: 5000,
+      })
+      .pipe(Effect.ignore)
+
+    const trim = Effect.fn("SessionPrompt.trim")(function* (sessionID: SessionID) {
+      if (Option.isNone(yield* state.assertNotBusy(sessionID).pipe(Effect.option))) return
+      const previous = yield* sessions.findMessage(sessionID, () => true).pipe(Effect.orDie)
+      if (Option.isNone(previous)) {
+        yield* noEligibleContext
+        return
+      }
+      // startShell claims ownership atomically and rejects rather than joining an active run.
+      yield* state
+        .startShell(
+          sessionID,
+          Effect.succeed(previous.value),
+          Effect.gen(function* () {
+            const messages = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+              Effect.provideService(Database.Service, database),
+            )
+            const latest = messages.at(-1)
+            if (!latest || !Trimming.groups(messages).length) {
+              yield* noEligibleContext
+              return latest ?? previous.value
+            }
+            const settings = { ...Trimming.defaults, ...(yield* config.get()).trimming, enabled: true }
+            const user = messages.findLast((message) => message.info.role === "user")
+            if (user?.info.role !== "user") return latest
+            const model = yield* provider
+              .getModel(user.info.model.providerID, user.info.model.modelID)
+              .pipe(Effect.orDie)
+            yield* trimSnapshot(latest, messages, model, settings)
+            return latest
+          }).pipe(Effect.catchCause((cause) => trimFailure(cause).pipe(Effect.as(previous.value)))),
+        )
+        .pipe(
+          Effect.catchTag("SessionBusyError", () => Effect.void),
+          Effect.asVoid,
+        )
+    })
+
+    const trimSnapshot = Effect.fn("SessionPrompt.trimSnapshot")(function* (
+      message: SessionV1.WithParts,
+      messages: SessionV1.WithParts[],
+      model: Provider.Model,
+      settings: Trimming.Config,
+    ) {
+      if (!Trimming.groups(messages).length) return
+      const before = Token.estimate(JSON.stringify(yield* MessageV2.toModelMessagesEffect(messages, model)))
+      yield* status.set(message.info.sessionID, { type: "busy" })
+      yield* events
+        .publish(TuiEvent.ToastShow, {
+          message: `Trimming context (~${Math.round(before / 1000)}k tokens)…`,
+          variant: "info",
+          duration: 180000,
+        })
+        .pipe(Effect.ignore)
+      const proposals = yield* trimming.review({ messages, config: settings })
+      const latest = yield* sessions.findMessage(message.info.sessionID, () => true).pipe(Effect.orDie)
+      // A steer admitted during review changes what the note must preserve.
+      if (Option.isNone(latest) || latest.value.info.id !== message.info.id) {
+        yield* events
+          .publish(TuiEvent.ToastShow, {
+            message: "Context trimming skipped: a newer prompt arrived",
+            variant: "info",
+            duration: 5000,
+          })
+          .pipe(Effect.ignore)
+        return
+      }
+      const plan = proposals.filter((proposal) => proposal.afterTokens < proposal.beforeTokens)
+      const parts = plan.flatMap((proposal) => proposal.parts)
+      if (new Set(parts.map((part) => part.id)).size !== parts.length)
+        return yield* Effect.die("Overlapping trimming proposals")
+      for (const proposal of plan) {
+        // Proposals are authority only over parts in the supplied snapshot.
+        if (
+          !proposal.note.trim() ||
+          !proposal.parts.length ||
+          !proposal.parts.every((part) => messages.some((msg) => msg.parts.includes(part)))
+        )
+          return yield* Effect.die("Invalid trimming proposal")
+      }
+      // Validate the entire plan before editing; each accepted group checks again
+      // at its own write boundary because EventV2 has no multi-event transaction.
+      for (const part of parts) {
+        const current = yield* sessions.getPart({
+          sessionID: message.info.sessionID,
+          messageID: part.messageID,
+          partID: part.id,
+        })
+        if (
+          part.sessionID !== message.info.sessionID ||
+          part.state.status !== "completed" ||
+          part.state.time.compacted !== undefined ||
+          part.state.attachments?.length ||
+          !isDeepStrictEqual(current, part)
+        )
+          return yield* Effect.die("Trimming plan is no longer current")
+      }
+      for (const proposal of plan) {
+        yield* sessions.replaceCompletedTools({
+          sessionID: message.info.sessionID,
+          parts: proposal.parts,
+          note: proposal.note,
+        })
+      }
+      const after = yield* MessageV2.filterCompactedEffect(message.info.sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+      )
+      const estimate = Token.estimate(JSON.stringify(yield* MessageV2.toModelMessagesEffect(after, model)))
+      yield* events
+        .publish(TuiEvent.ToastShow, {
+          message:
+            estimate < before
+              ? `Context trimming complete: ~${Math.round(before / 1000)}k → ~${Math.round(estimate / 1000)}k tokens`
+              : "Context trimming finished: context unchanged",
+          variant: estimate < before ? "success" : "info",
+          duration: 5000,
+        })
+        .pipe(Effect.ignore)
+    })
 
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
@@ -1776,6 +1831,7 @@ const layer = Layer.effect(
     })
 
     return Service.of({
+      trim,
       cancel,
       retry,
       prompt,
