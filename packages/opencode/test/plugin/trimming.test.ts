@@ -310,7 +310,21 @@ it.effect("requests contain only local text and ordered readable reasoning, pres
     const messages = [
       user("nonlocal original request"),
       assistant([text("before"), reasoning("plan")]),
-      assistant([tool(), reasoning("result"), reasoning(""), text("after")]),
+      assistant([
+        tool(8000),
+        {
+          id: PartID.ascending(),
+          messageID: MessageID.ascending(),
+          sessionID,
+          type: "patch",
+          hash: "snapshot-hash",
+          files: ["snapshot-file.ts"],
+        },
+        tool(8000),
+        reasoning("result"),
+        reasoning(""),
+        text("after"),
+      ]),
       assistant([text("nonlocal final answer")], { finish: "stop" }),
       user("new followup"),
       assistant([tool(), reasoning("last thought")]),
@@ -333,7 +347,8 @@ it.effect("requests contain only local text and ordered readable reasoning, pres
         before: "before",
         content: [
           { type: "reasoning", text: "plan" },
-          { type: "tool", tool: "read", args: {}, output: "x".repeat(16000) },
+          { type: "tool", tool: "read", args: {}, output: "x".repeat(8000) },
+          { type: "tool", tool: "read", args: {}, output: "x".repeat(8000) },
           { type: "reasoning", text: "result" },
         ],
         after: "after",
