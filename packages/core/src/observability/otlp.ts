@@ -3,6 +3,7 @@ import { OtlpLogger } from "effect/unstable/observability"
 import { Flag } from "../flag/flag"
 import { InstallationChannel, InstallationVersion } from "../installation/version"
 import { runID } from "./shared"
+import { Langfuse } from "./langfuse"
 
 const endpoint = Flag.OTEL_EXPORTER_OTLP_ENDPOINT
 
@@ -53,7 +54,8 @@ export function loggers() {
 }
 
 export async function tracingLayer() {
-  if (!endpoint) return Layer.empty
+  const langfuse = await Langfuse.configuration()
+  if (!endpoint && !langfuse) return Layer.empty
   const NodeSdk = await import("@effect/opentelemetry/NodeSdk")
   const OTLP = await import("@opentelemetry/exporter-trace-otlp-http")
   const SdkBase = await import("@opentelemetry/sdk-trace-base")
@@ -65,14 +67,25 @@ export async function tracingLayer() {
   manager.enable()
   context.setGlobalContextManager(manager)
 
+  const langfuseProcessor = langfuse
+    ? new SdkBase.BatchSpanProcessor(Langfuse.selectedExporter(new OTLP.OTLPTraceExporter(langfuse)))
+    : undefined
+  if (langfuseProcessor) Langfuse.activate(langfuseProcessor)
   return NodeSdk.layer(() => ({
     resource: resource(),
-    spanProcessor: new SdkBase.BatchSpanProcessor(
-      new OTLP.OTLPTraceExporter({
-        url: `${endpoint}/v1/traces`,
-        headers,
-      }),
-    ),
+    spanProcessor: [
+      ...(endpoint
+        ? [
+            new SdkBase.BatchSpanProcessor(
+              new OTLP.OTLPTraceExporter({
+                url: `${endpoint}/v1/traces`,
+                headers,
+              }),
+            ),
+          ]
+        : []),
+      ...(langfuseProcessor ? [langfuseProcessor] : []),
+    ],
   }))
 }
 

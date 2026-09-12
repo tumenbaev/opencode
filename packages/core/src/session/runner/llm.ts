@@ -39,6 +39,7 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { Langfuse } from "../../observability/langfuse"
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -237,6 +238,13 @@ const layer = Layer.effect(
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
       const providerStream = llm.stream(request).pipe(
+        (stream) =>
+          Langfuse.generation(stream, {
+            sessionID: session.id,
+            model: model.id,
+            provider: model.provider,
+            request: { system: request.system, messages: request.messages, tools: request.tools },
+          }),
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
