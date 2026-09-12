@@ -1,4 +1,4 @@
-import * as Tool from "./tool"
+import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
 import { ToolJsonSchema } from "./json-schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -23,6 +23,8 @@ export interface TaskPromptOps {
 }
 
 const id = "task"
+const CONTEXT_BUDGET_NOTE =
+  "This worker reached its context budget and is no longer available for follow-ups. If further work is needed, start a new task using the result above as context."
 const BACKGROUND_DESCRIPTION = [
   "Background mode: background=true launches the subagent asynchronously and returns immediately.",
   "Foreground is the default; use it when you need the result before continuing.",
@@ -67,6 +69,7 @@ function renderOutput(input: {
   state: "running" | "completed" | "error"
   summary?: string
   text: string
+  contextBudgetReached?: boolean
 }) {
   const tag = input.state === "error" ? "task_error" : "task_result"
   return [
@@ -75,6 +78,7 @@ function renderOutput(input: {
     `<${tag}>`,
     input.text,
     `</${tag}>`,
+    ...(input.contextBudgetReached ? [CONTEXT_BUDGET_NOTE] : []),
     "</task>",
   ].join("\n")
 }
@@ -94,6 +98,10 @@ export const TaskTool = Tool.define(
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
     ) {
+      const session = params.task_id
+        ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        : undefined
+      if (session?.metadata?.contextBudgetReached === true) return yield* Effect.fail(new Error(CONTEXT_BUDGET_NOTE))
       const cfg = yield* config.get()
       const runInBackground = params.background === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
@@ -134,9 +142,6 @@ export const TaskTool = Tool.define(
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
 
-      const session = params.task_id
-        ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
-        : undefined
       if (ctx.extra?.retryTask === true && !session) {
         return yield* Effect.fail(new Error(`Cannot retry missing task session: ${params.task_id ?? "unknown"}`))
       }
@@ -202,6 +207,9 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
+        if ((yield* sessions.get(nextSession.id)).metadata?.contextBudgetReached === true) {
+          return yield* Effect.fail(new Error(CONTEXT_BUDGET_NOTE))
+        }
         const result =
           ctx.extra?.retryTask === true
             ? yield* ops.retry(nextSession.id)
@@ -238,6 +246,7 @@ export const TaskTool = Tool.define(
         text: string,
       ) {
         const currentParent = yield* sessions.get(ctx.sessionID)
+        const worker = yield* sessions.get(nextSession.id)
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,
@@ -255,6 +264,7 @@ export const TaskTool = Tool.define(
                       ? `Background task completed: ${params.description}`
                       : `Background task failed: ${params.description}`,
                   text,
+                  contextBudgetReached: state === "completed" && worker.metadata?.contextBudgetReached === true,
                 }),
               },
             ],
@@ -350,7 +360,12 @@ export const TaskTool = Tool.define(
             return {
               title: params.description,
               metadata,
-              output: renderOutput({ sessionID: nextSession.id, state: "completed", text: result?.output ?? "" }),
+              output: renderOutput({
+                sessionID: nextSession.id,
+                state: "completed",
+                text: result?.output ?? "",
+                contextBudgetReached: (yield* sessions.get(nextSession.id)).metadata?.contextBudgetReached === true,
+              }),
             }
           }),
         (_, exit) =>

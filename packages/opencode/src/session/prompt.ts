@@ -63,6 +63,7 @@ import { SessionTools } from "./tools"
 import { SessionRetry } from "./retry"
 import { LLMEvent } from "@opencode-ai/llm"
 import { isTextLikeFileMime } from "@/util/media"
+import CONTEXT_BUDGET_PROMPT from "./prompt/context-budget.txt"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1471,6 +1472,19 @@ const layer = Layer.effect(
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
+        let contextBudgetReached = session.metadata?.contextBudgetReached === true
+        let contextBudgetReminded: boolean | undefined
+        const checkContextBudget = Effect.fnUntraced(function* (
+          tokens: SessionV1.Assistant["tokens"],
+          model: Provider.Model,
+        ) {
+          if (!session.parentID || contextBudgetReached || model.limit.context === 0 || tokenCount(tokens) <= 0) return
+          const budget = usable({ cfg: yield* config.get(), model, outputTokenMax: flags.outputTokenMax })
+          if (budget <= 0 || tokenCount(tokens) < 0.8 * budget) return
+          yield* sessions.setContextBudgetReached(sessionID)
+          contextBudgetReached = true
+        })
+
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
@@ -1479,7 +1493,9 @@ const layer = Layer.effect(
             Effect.provideService(Database.Service, database),
           )
 
-          const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
+          const latest = MessageV2.latest(msgs)
+          const { assistant: lastAssistant, finished: lastFinished, tasks } = latest
+          let lastUser = latest.user
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
@@ -1525,6 +1541,9 @@ const layer = Layer.effect(
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
           const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          // Use the latest reported usage, not cumulative or peak usage; skip zero-initialized messages.
+          const reported = msgs.findLast((msg) => msg.info.role === "assistant" && tokenCount(msg.info.tokens) > 0)
+          if (reported?.info.role === "assistant") yield* checkContextBudget(reported.info.tokens, model)
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
@@ -1551,6 +1570,47 @@ const layer = Layer.effect(
           ) {
             yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
             continue
+          }
+
+          if (session.parentID && contextBudgetReached) {
+            // Search full history once, so compaction and resumed runs don't duplicate the reminder.
+            contextBudgetReminded ??= Option.isSome(
+              yield* sessions
+                .findMessage(
+                  sessionID,
+                  (message) =>
+                    message.info.role === "user" &&
+                    message.parts.some(
+                      (part) => part.type === "text" && part.metadata?.context_budget_reminder === true,
+                    ),
+                )
+                .pipe(Effect.orDie),
+            )
+            if (!contextBudgetReminded) {
+              const reminder: SessionV1.User = {
+                ...lastUser,
+                id: MessageID.ascending(),
+                time: { created: Date.now() },
+              }
+              const part: SessionV1.TextPart = {
+                id: PartID.ascending(),
+                messageID: reminder.id,
+                sessionID,
+                type: "text",
+                text: CONTEXT_BUDGET_PROMPT,
+                synthetic: true,
+                metadata: { context_budget_reminder: true },
+              }
+              yield* Effect.uninterruptible(
+                Effect.gen(function* () {
+                  yield* sessions.updateMessage(reminder)
+                  yield* sessions.updatePart(part)
+                }),
+              )
+              msgs.push({ info: reminder, parts: [part] })
+              lastUser = reminder
+              contextBudgetReminded = true
+            }
           }
 
           const agent = yield* agents.get(lastUser.agent)
@@ -1670,6 +1730,8 @@ const layer = Layer.effect(
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
+            // Persist even when this response stops the runner or requests compaction.
+            yield* checkContextBudget(handle.message.tokens, model)
 
             if (structured !== undefined) {
               handle.message.structured = structured

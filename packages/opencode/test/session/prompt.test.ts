@@ -830,6 +830,104 @@ it.instance("legacy prompt emits message events without session.next events", ()
   }),
 )
 
+for (const scenario of [
+  { child: false, usage: 72_000, reached: false, older: false },
+  { child: true, usage: 71_999, reached: false, older: true },
+  { child: true, usage: 72_000, reached: true, older: false },
+]) {
+  it.instance(`soft context budget: child=${scenario.child}, usage=${scenario.usage}`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), compaction: { auto: false } }))
+      const sessions = yield* Session.Service
+      const prompt = yield* SessionPrompt.Service
+      const parent = yield* sessions.create({ title: "Pinned" })
+      const chat = scenario.child ? yield* sessions.create({ parentID: parent.id, title: "Child" }) : parent
+      if (scenario.older) {
+        const older = yield* seed(chat.id, { finish: "stop" })
+        yield* sessions.updateMessage({
+          ...older.assistant,
+          tokens: { input: 80_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        })
+      }
+      const previous = yield* seed(chat.id, { finish: "stop" })
+      yield* sessions.updateMessage({
+        ...previous.assistant,
+        tokens: { input: scenario.usage, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      })
+      yield* llm.push(reply().text("Verified handoff").stop(), reply().text("Still wrapping up").stop())
+      for (const text of ["continue", "finish"]) {
+        yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text }] })
+        expect((yield* sessions.get(chat.id)).metadata?.contextBudgetReached === true).toBe(scenario.reached)
+      }
+      const hits = yield* llm.hits
+      expect(hits).toHaveLength(2)
+      for (const hit of hits) {
+        expect(
+          JSON.stringify(hit.body).split("Your subagent session has reached its soft context budget.").length - 1,
+        ).toBe(scenario.reached ? 1 : 0)
+        expect(hit.body.tools).toBeDefined()
+      }
+      const reminders = (yield* sessions.messages({ sessionID: chat.id })).filter((message) =>
+        message.parts.some((part) => part.type === "text" && part.metadata?.context_budget_reminder === true),
+      )
+      expect(reminders).toHaveLength(scenario.reached ? 1 : 0)
+      if (scenario.reached) {
+        expect(reminders[0].info).toMatchObject({ role: "user", model: ref })
+        expect(reminders[0].parts[0]).toMatchObject({ type: "text", synthetic: true })
+      }
+    }),
+  )
+}
+
+it.instance("soft context budget latches usage from a final response before stopping", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const parent = yield* sessions.create({ title: "Pinned" })
+    const chat = yield* sessions.create({ parentID: parent.id, title: "Child" })
+    yield* llm.push(reply().text("Verified results").usage({ input: 71_999, output: 1 }).stop())
+    yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "work" }] })
+    expect((yield* sessions.get(chat.id)).metadata?.contextBudgetReached === true).toBe(true)
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(1)
+    expect(JSON.stringify(hits[0].body)).not.toContain("Your subagent session has reached its soft context budget.")
+  }),
+)
+
+it.instance("soft context budget appends a user reminder after tool results without changing system context", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const parent = yield* sessions.create({ title: "Pinned" })
+    const chat = yield* sessions.create({
+      parentID: parent.id,
+      title: "Child",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* llm.push(
+      reply().tool("glob", { pattern: "*.txt" }).usage({ input: 72_000, output: 1 }).stop(),
+      reply().text("Verified handoff").stop(),
+    )
+    yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "work" }] })
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(2)
+    const before = hits[0].body.messages as { role: string; content: unknown }[]
+    const after = hits[1].body.messages as { role: string; content: unknown }[]
+    expect(after.filter((message) => message.role === "system")).toEqual(
+      before.filter((message) => message.role === "system"),
+    )
+    expect(after.at(-2)?.role).toBe("tool")
+    expect(after.at(-1)?.role).toBe("user")
+    expect(JSON.stringify(after.at(-1)?.content)).toContain(
+      "Your subagent session has reached its soft context budget.",
+    )
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(messages.at(-1)?.info).toMatchObject({ role: "assistant", parentID: messages.at(-2)?.info.id })
+  }),
+)
+
 it.instance("loop surfaces content-filter finishes as session errors", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

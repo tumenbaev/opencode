@@ -184,6 +184,103 @@ function reply(
 }
 
 describe("tool.task", () => {
+  background.instance("context budget persists, allows completion, and rejects follow-ups", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id })
+      expect((yield* sessions.get(child.id)).metadata?.contextBudgetReached === true).toBe(false)
+      yield* sessions.setMetadata({ sessionID: child.id, metadata: { existing: "preserved" } })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let calls = 0
+      const params = { description: "budget", prompt: "work", subagent_type: "general", task_id: child.id }
+      const ctx = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: {
+          promptOps: {
+            ...stubOps(),
+            prompt: (input: SessionPrompt.PromptInput) =>
+              Effect.gen(function* () {
+                calls++
+                yield* sessions.setContextBudgetReached(input.sessionID)
+                return reply(input, "worker result")
+              }),
+          },
+        },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+      const result = yield* def.execute(params, ctx)
+      expect(result.output).toContain("worker result\n</task_result>\nThis worker reached its context budget")
+      yield* sessions.setTitle({ sessionID: child.id, title: "updated" })
+      expect((yield* sessions.get(child.id)).metadata?.contextBudgetReached === true).toBe(true)
+      expect((yield* sessions.get(child.id)).metadata).toEqual({ existing: "preserved", contextBudgetReached: true })
+      for (const background of [false, true]) {
+        const exit = yield* def.execute({ ...params, background }, ctx).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("no longer available for follow-ups")
+      }
+      expect(calls).toBe(1)
+    }),
+  )
+
+  background.instance("queued follow-ups recheck context budget before prompting", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id })
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let calls = 0
+      const params = {
+        description: "budget",
+        prompt: "work",
+        subagent_type: "general",
+        task_id: child.id,
+        background: true,
+      }
+      const ctx = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: {
+          promptOps: {
+            ...stubOps(),
+            prompt: (input: SessionPrompt.PromptInput) =>
+              Effect.gen(function* () {
+                if (input.sessionID !== child.id) return reply(input, "notification")
+                calls++
+                yield* Deferred.succeed(started, undefined)
+                yield* Deferred.await(release)
+                yield* sessions.setContextBudgetReached(child.id)
+                return reply(input, "finished")
+              }),
+          },
+        },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+      yield* def.execute(params, ctx)
+      yield* Deferred.await(started)
+      expect((yield* def.execute(params, ctx)).output).toContain("Background task updated")
+      yield* Deferred.succeed(release, undefined)
+      const result = yield* jobs.wait({ id: child.id })
+      expect(result.info?.status).toBe("error")
+      expect(result.info?.error).toContain("no longer available for follow-ups")
+      expect(calls).toBe(1)
+    }),
+  )
+
   it.instance(
     "description sorts subagents by name and is stable across calls",
     () =>
