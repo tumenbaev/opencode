@@ -73,6 +73,8 @@ export const rpc = {
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
     process.off("unhandledRejection", onUnhandledRejection)
+    const { Langfuse } = await import("@opencode-ai/core/observability/langfuse")
+    await Langfuse.flush()
     process.off("uncaughtException", onUncaughtException)
   },
 }

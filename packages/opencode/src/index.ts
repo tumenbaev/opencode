@@ -134,6 +134,8 @@ try {
   }
   process.exitCode = 1
 } finally {
+  const { Langfuse } = await import("@opencode-ai/core/observability/langfuse")
+  await Langfuse.flush()
   // Some subprocesses don't react properly to SIGTERM and similar signals.
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.

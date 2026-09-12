@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { Langfuse } from "@opencode-ai/core/observability/langfuse"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -378,6 +379,13 @@ const live: Layer.Layer<
             )
           }),
         ),
+      ).pipe((stream) =>
+        Langfuse.generation(stream, {
+          sessionID: input.sessionID,
+          model: input.model.id,
+          provider: input.model.providerID,
+          request: { system: input.system, messages: input.messages, tools: Object.keys(input.tools) },
+        }),
       )
 
     return Service.of({ stream })
