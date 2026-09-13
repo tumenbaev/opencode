@@ -5,6 +5,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
+import { Global } from "@opencode-ai/core/global"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Format } from "../../src/format"
@@ -87,6 +88,47 @@ const expectFailure = <A, E, R>(effect: Effect.Effect<A, E, R>, message?: string
 const expectReadFailure = (filepath: string) => expectFailure(readText(filepath))
 
 describe("tool.apply_patch freeform", () => {
+  it.instance("expands TMPDIR in add, update, move and delete headers", () =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.acquireRelease(
+        Effect.promise(() => fs.mkdtemp(path.join(Global.Path.tmp, "patch-test-"))),
+        (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+      )
+      const shorthand = "${TMPDIR}/opencode/" + path.basename(directory)
+      const moved = "$TMPDIR/opencode/" + path.basename(directory) + "/moved.txt"
+      const sourceDisplay = shorthand + "/source.txt"
+      const movedDisplay = "${TMPDIR}/opencode/" + path.basename(directory) + "/moved.txt"
+      const sourcePath = path.join(directory, "source.txt")
+      const movedPath = path.join(directory, "moved.txt")
+      const { ctx } = makeCtx()
+      const added = yield* execute(
+        { patchText: `*** Begin Patch\n*** Add File: ${shorthand}/source.txt\n+before\n*** End Patch` },
+        ctx,
+      )
+      expect(added.metadata.files[0]).toMatchObject({ filePath: sourcePath, relativePath: sourceDisplay })
+      expect(added.output).toContain(`A ${sourceDisplay}`)
+      expect(yield* readText(sourcePath)).toBe("before\n")
+      const movedResult = yield* execute(
+        {
+          patchText: `*** Begin Patch\n*** Update File: ${shorthand}/source.txt\n*** Move to: ${moved}\n@@\n-before\n+after\n*** End Patch`,
+        },
+        ctx,
+      )
+      expect(movedResult.metadata.files[0]).toMatchObject({
+        filePath: sourcePath,
+        movePath: movedPath,
+        relativePath: movedDisplay,
+      })
+      expect(movedResult.output).toContain(`M ${movedDisplay}`)
+      expect(yield* readText(movedPath)).toBe("after\n")
+      yield* expectReadFailure(sourcePath)
+      const deleted = yield* execute({ patchText: `*** Begin Patch\n*** Delete File: ${moved}\n*** End Patch` }, ctx)
+      expect(deleted.metadata.files[0]).toMatchObject({ filePath: movedPath, relativePath: movedDisplay })
+      expect(deleted.output).toContain(`D ${movedDisplay}`)
+      yield* expectReadFailure(movedPath)
+    }),
+  )
+
   it.live("requires patchText", () =>
     Effect.gen(function* () {
       const { ctx } = makeCtx()

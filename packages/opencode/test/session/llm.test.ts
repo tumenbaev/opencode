@@ -28,6 +28,10 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { ProviderError } from "@/provider/error"
+import { Langfuse } from "@opencode-ai/core/observability/langfuse"
+import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
+
+const NodeSdk = await import("@effect/opentelemetry/NodeSdk")
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
@@ -54,6 +58,16 @@ const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: stri
 }
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node])))
+const langfuseExporter = new InMemorySpanExporter()
+const itLangfuse = testEffect(
+  Layer.mergeAll(
+    AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node])),
+    NodeSdk.layer(() => ({
+      resource: { serviceName: "test" },
+      spanProcessor: new SimpleSpanProcessor(Langfuse.selectedExporter(langfuseExporter)),
+    })),
+  ),
+)
 
 // LLM.stream returns a Stream, not an Effect, so we can't use the serviceUse proxy.
 const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain))
@@ -2241,6 +2255,73 @@ describe("session.llm.stream", () => {
         provider: {
           [geminiFixture.providerID]: {
             options: { apiKey: "test-google-key", baseURL: `${state.server!.url.origin}/v1beta` },
+          },
+        },
+      }),
+    },
+  )
+
+  itLangfuse.instance(
+    "reports only permission-filtered tools to Langfuse",
+    () =>
+      Effect.gen(function* () {
+        const fixture = loadFixture(alibabaQwenFixture.providerID, alibabaQwenFixture.modelID)
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream("Hello"), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+        Langfuse.activate()
+
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(alibabaQwenFixture.providerID),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const sessionID = SessionID.make("session-test-langfuse-tools")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [
+            { permission: "read", pattern: "*", action: "allow" },
+            { permission: "question", pattern: "*", action: "deny" },
+          ],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("msg_user-langfuse-tools"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderV2.ID.make(alibabaQwenFixture.providerID), modelID: resolved.id },
+        } satisfies SessionV1.User
+
+        yield* drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {
+            read: tool({ description: "Read a file", inputSchema: z.object({}) }),
+            question: tool({ description: "Ask a question", inputSchema: z.object({}) }),
+          },
+        })
+        yield* Effect.promise(() => request)
+
+        const spans = langfuseExporter.getFinishedSpans()
+        expect(spans).toHaveLength(1)
+        expect(JSON.parse(String(spans[0].attributes["langfuse.observation.input"])).tools).toEqual(["read"])
+      }),
+    {
+      config: () => ({
+        enabled_providers: [alibabaQwenFixture.providerID],
+        provider: {
+          [alibabaQwenFixture.providerID]: {
+            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),

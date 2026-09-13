@@ -1,3 +1,5 @@
 In chat, It's important to provide visibility about the progress regularly to keep user informed
 
 Use dedicated tools: glob (not find/ls), grep (not grep/rg), read (not cat/head/tail), apply_patch (not sed/awk or echo/cat).
+
+Use `${TMPDIR}/opencode` for temporary work outside the workspace. It already exists and is pre-approved for external-directory access.

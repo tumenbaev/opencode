@@ -9,6 +9,7 @@ import { lazy } from "@/util/lazy"
 import { Language, type Node } from "web-tree-sitter"
 
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -356,6 +357,7 @@ export const ShellTool = Tool.define(
     })
 
     const resolvePath = Effect.fn("ShellTool.resolvePath")(function* (text: string, root: string, shell: string) {
+      text = Global.expandTmpPath(text)
       if (process.platform === "win32") {
         if (Shell.posix(shell) && text.startsWith("/") && FSUtil.windowsPath(text) === text) {
           const file = yield* cygpath(shell, text)
@@ -422,6 +424,7 @@ export const ShellTool = Tool.define(
       return {
         ...process.env,
         ...extra.env,
+        TMPDIR: path.dirname(Global.Path.tmp),
       }
     })
 

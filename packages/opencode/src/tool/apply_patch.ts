@@ -10,10 +10,20 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { trimDiff } from "./edit"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
+
+function displayPath(worktree: string, filePath: string) {
+  const relative = path.relative(Global.Path.tmp, filePath)
+  if (relative === "") return "${TMPDIR}/opencode"
+  if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+    return `\${TMPDIR}/opencode/${relative.replaceAll("\\", "/")}`
+  }
+  return path.relative(worktree, filePath).replaceAll("\\", "/")
+}
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String,
@@ -70,7 +80,7 @@ export const ApplyPatchTool = Tool.define(
       let totalDiff = ""
 
       for (const hunk of hunks) {
-        const filePath = path.resolve(instance.directory, hunk.path)
+        const filePath = path.resolve(instance.directory, Global.expandTmpPath(hunk.path))
         yield* assertExternalDirectoryEffect(ctx, filePath)
 
         switch (hunk.type) {
@@ -139,7 +149,9 @@ export const ApplyPatchTool = Tool.define(
               if (change.removed) deletions += change.count || 0
             }
 
-            const movePath = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
+            const movePath = hunk.move_path
+              ? path.resolve(instance.directory, Global.expandTmpPath(hunk.move_path))
+              : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
 
             fileChanges.push({
@@ -193,7 +205,7 @@ export const ApplyPatchTool = Tool.define(
       // Build per-file metadata for UI rendering (used for both permission and result)
       const files = fileChanges.map((change) => ({
         filePath: change.filePath,
-        relativePath: path.relative(instance.worktree, change.movePath ?? change.filePath).replaceAll("\\", "/"),
+        relativePath: displayPath(instance.worktree, change.movePath ?? change.filePath),
         type: change.type,
         patch: change.diff,
         additions: change.additions,
@@ -273,13 +285,13 @@ export const ApplyPatchTool = Tool.define(
       // Generate output summary
       const summaryLines = fileChanges.map((change) => {
         if (change.type === "add") {
-          return `A ${path.relative(instance.worktree, change.filePath).replaceAll("\\", "/")}`
+          return `A ${displayPath(instance.worktree, change.filePath)}`
         }
         if (change.type === "delete") {
-          return `D ${path.relative(instance.worktree, change.filePath).replaceAll("\\", "/")}`
+          return `D ${displayPath(instance.worktree, change.filePath)}`
         }
         const target = change.movePath ?? change.filePath
-        return `M ${path.relative(instance.worktree, target).replaceAll("\\", "/")}`
+        return `M ${displayPath(instance.worktree, target)}`
       })
       let output = `Success. Updated the following files:\n${summaryLines.join("\n")}`
 

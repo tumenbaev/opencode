@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import { Config } from "@opencode-ai/core/config"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -133,6 +134,34 @@ const call = (input: typeof BashTool.Input.Type, id = "call-bash") => ({
 const it = testEffect(Layer.empty)
 
 describe("BashTool", () => {
+  it.live("TMPDIR workdir agrees with the shell environment", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            for (const workdir of ["${TMPDIR}/opencode", "$TMPDIR/opencode"]) {
+              const output = yield* executeTool(registry, call({
+                command: `"${process.execPath}" -e "console.log(process.env.TMPDIR); console.log(process.cwd())"`,
+                workdir,
+              }))
+              expect(output).toMatchObject({
+                type: "content",
+                value: expect.arrayContaining([{
+                  type: "text",
+                  text: `${path.dirname(Global.Path.tmp)}\n${realpathSync(Global.Path.tmp)}\n`,
+                }]),
+              })
+            }
+          }),
+          LayerNode.compile(AppProcess.node),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("registers and returns structured successful output from the active Location", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

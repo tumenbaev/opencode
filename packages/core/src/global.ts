@@ -30,6 +30,11 @@ const paths = {
 
 export const Path = paths
 
+/** Expand only a leading TMPDIR token, using the same temp root as shell tools. */
+export function expandTmpPath(value: string): string {
+  return value.replace(/^\$(?:\{TMPDIR\}|TMPDIR)(?=[/\\]|$)/, () => path.dirname(Path.tmp))
+}
+
 Flock.setGlobal({ state })
 
 await Promise.all([

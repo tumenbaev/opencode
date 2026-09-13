@@ -250,6 +250,7 @@ const live: Layer.Layer<
           return {
             type: "native" as const,
             stream: native.stream,
+            toolNames: Object.keys(prepared.tools),
           }
         }
         yield* Effect.logInfo("llm runtime selected", {
@@ -276,8 +277,10 @@ const live: Layer.Layer<
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
+      const activeTools = Object.keys(prepared.tools).filter((x) => x !== "invalid")
       return {
         type: "ai-sdk" as const,
+        toolNames: activeTools,
         result: streamText({
           onError(error) {
             bridge.fork(
@@ -315,7 +318,7 @@ const live: Layer.Layer<
           topP: prepared.params.topP,
           topK: prepared.params.topK,
           providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
-          activeTools: Object.keys(prepared.tools).filter((x) => x !== "invalid"),
+          activeTools,
           tools: prepared.tools,
           toolChoice: input.toolChoice,
           maxOutputTokens: prepared.params.maxOutputTokens,
@@ -356,37 +359,41 @@ const live: Layer.Layer<
     })
 
     const stream: Interface["stream"] = (input) =>
-      Stream.scoped(
-        Stream.unwrap(
-          Effect.gen(function* () {
-            const ctrl = yield* Effect.acquireRelease(
-              Effect.sync(() => new AbortController()),
-              (ctrl) => Effect.sync(() => ctrl.abort()),
-            )
+      Stream.suspend(() => {
+        let toolNames: string[] = []
+        return Stream.scoped(
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const ctrl = yield* Effect.acquireRelease(
+                Effect.sync(() => new AbortController()),
+                (ctrl) => Effect.sync(() => ctrl.abort()),
+              )
 
-            const result = yield* run({ ...input, abort: ctrl.signal })
+              const result = yield* run({ ...input, abort: ctrl.signal })
+              toolNames = result.toolNames
 
-            if (result.type === "native") return result.stream
+              if (result.type === "native") return result.stream
 
-            // Adapter seam: both runtimes expose the same LLMEvent stream. Native
-            // already returns one; AI SDK streams are converted here.
-            const state = LLMAISDK.adapterState()
-            return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
-              e instanceof Error ? e : new Error(String(e)),
-            ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
-              Stream.flatMap((events) => Stream.fromIterable(events)),
-            )
+              // Adapter seam: both runtimes expose the same LLMEvent stream. Native
+              // already returns one; AI SDK streams are converted here.
+              const state = LLMAISDK.adapterState()
+              return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                e instanceof Error ? e : new Error(String(e)),
+              ).pipe(
+                Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+                Stream.flatMap((events) => Stream.fromIterable(events)),
+              )
+            }),
+          ),
+        ).pipe((stream) =>
+          Langfuse.generation(stream, {
+            sessionID: input.sessionID,
+            model: input.model.id,
+            provider: input.model.providerID,
+            request: () => ({ system: input.system, messages: input.messages, tools: toolNames }),
           }),
-        ),
-      ).pipe((stream) =>
-        Langfuse.generation(stream, {
-          sessionID: input.sessionID,
-          model: input.model.id,
-          provider: input.model.providerID,
-          request: { system: input.system, messages: input.messages, tools: Object.keys(input.tools) },
-        }),
-      )
+        )
+      })
 
     return Service.of({ stream })
   }),

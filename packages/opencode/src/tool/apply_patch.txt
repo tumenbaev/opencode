@@ -6,7 +6,7 @@ Every patch MUST start with following line:
 Every patch MUST end with following line:
 *** End Patch
 
-Paths within the project must be relative and outside the project must be absolute.
+Paths within the project must be relative. Outside paths must be absolute or start with `${TMPDIR}/opencode`.
 
 To update and/or move an existing file, use:
 
