@@ -3,6 +3,7 @@ export * as GlobTool from "./glob"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import path from "path"
+import { Global } from "../global"
 import { makeLocationNode } from "../effect/app-node"
 import { FileSystem } from "../filesystem"
 import { Location } from "../location"
@@ -72,7 +73,7 @@ const layer = Layer.effectDiscard(
                 agent: context.agent,
                 source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
               })
-              const cwd = path.resolve(location.directory, input.path ?? ".")
+              const cwd = path.resolve(location.directory, Global.expandTmpPath(input.path ?? "."))
               return yield* ripgrep
                 .glob({
                   cwd,

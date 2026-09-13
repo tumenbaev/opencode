@@ -10,6 +10,7 @@ import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Format } from "../format"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -38,9 +39,7 @@ export const WriteTool = Tool.define(
       execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
-          const filepath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(instance.directory, params.filePath)
+          const filepath = path.resolve(instance.directory, Global.expandTmpPath(params.filePath))
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)

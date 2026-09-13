@@ -17,6 +17,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import * as Bom from "@/util/bom"
 
 function normalizeLineEndings(text: string): string {
@@ -77,9 +78,7 @@ export const EditTool = Tool.define(
           }
 
           const instance = yield* InstanceState.context
-          const filePath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(instance.directory, params.filePath)
+          const filePath = path.resolve(instance.directory, Global.expandTmpPath(params.filePath))
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           let diff = ""

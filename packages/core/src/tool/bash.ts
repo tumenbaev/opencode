@@ -5,6 +5,7 @@ import { ToolFailure } from "@opencode-ai/llm"
 import { Duration, Effect, Layer, Schema } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { Config } from "../config"
+import { Global } from "../global"
 import { makeLocationNode } from "../effect/app-node"
 import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
@@ -23,7 +24,7 @@ export const MAX_CAPTURE_BYTES = 1024 * 1024
 export const Input = Schema.Struct({
   command: Schema.String.annotate({ description: "Shell command string to execute" }),
   workdir: Schema.String.pipe(Schema.optional).annotate({
-    description: "Working directory. Defaults to the active Location; relative paths resolve from that Location.",
+    description: "Working directory. Defaults to the active Location; relative paths resolve from that Location. Use ${TMPDIR}/opencode for temporary work; file tool paths also accept this shorthand.",
   }),
   timeout: PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_TIMEOUT_MS))
     .pipe(Schema.optional)
@@ -157,6 +158,8 @@ const layer = Layer.effectDiscard(
                   .shell ?? defaultShell()
               const command = ChildProcess.make(input.command, [], {
                 cwd: target.canonical,
+                env: { TMPDIR: path.dirname(Global.Path.tmp) },
+                extendEnv: true,
                 shell,
                 stdin: "ignore",
                 detached: process.platform !== "win32",

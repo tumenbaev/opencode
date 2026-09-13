@@ -78,6 +78,7 @@ test("content is bounded, omits binary and transport fields, and tolerates cycle
 test("generation spans cover consumption, select only generations, group sessions, and do not double usage", async () => {
   const exporter = new InMemorySpanExporter()
   const generic = new InMemorySpanExporter()
+  let request = { messages: ["prompt"], tools: ["denied"] }
   Langfuse.activate()
   await Effect.gen(function* () {
     yield* Langfuse.generation(
@@ -90,16 +91,25 @@ test("generation spans cover consumption, select only generations, group session
       ]).pipe(
         Stream.tap(() =>
           Effect.sync(() => {
+            request = { messages: ["prompt"], tools: ["read"] }
+          }),
+        ),
+        Stream.tap(() =>
+          Effect.sync(() => {
             expect(exporter.getFinishedSpans()).toHaveLength(0)
           }),
         ),
       ),
-      { sessionID: "session-1", model: "test-model", provider: "test", request: { messages: ["prompt"] } },
+      { sessionID: "session-1", model: "test-model", provider: "test", request: () => request },
     ).pipe(Stream.runDrain)
     const spans = exporter.getFinishedSpans()
     expect(spans).toHaveLength(1)
     expect(spans[0].parentSpanContext).toBeUndefined()
     expect(spans[0].attributes["langfuse.session.id"]).toBe("session-1")
+    expect(JSON.parse(String(spans[0].attributes["langfuse.observation.input"]))).toEqual({
+      messages: ["prompt"],
+      tools: ["read"],
+    })
     expect(spans[0].attributes["langfuse.observation.output"]).toContain("hello")
     expect(spans[0].attributes["langfuse.observation.output"]).toContain("README.md")
     expect(spans[0].attributes["langfuse.observation.output"]).toContain("file contents")

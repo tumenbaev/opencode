@@ -1,7 +1,6 @@
 import { Schema } from "effect"
 import DESCRIPTION from "./shell.txt"
 import { PositiveInt } from "@opencode-ai/core/schema"
-import { Global } from "@opencode-ai/core/global"
 import { ShellID } from "./id"
 
 const PS = new Set(["powershell", "pwsh"])
@@ -279,7 +278,7 @@ export function render(name: string, platform: NodeJS.Platform, limits: Limits, 
       maxBytes: String(limits.maxBytes),
       os: platform,
       shell: name,
-      tmp: Global.Path.tmp,
+      tmp: "${TMPDIR}/opencode",
       workdirSection: selected.workdirSection,
       commandSection: selected.commandSection,
       gitCommands: selected.gitCommands,

@@ -7,6 +7,8 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
+import { Global } from "@opencode-ai/core/global"
+import { realpathSync } from "node:fs"
 import { ShellTool } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
@@ -87,6 +89,20 @@ const quote = (text: string) => `"${text}"`
 const squote = (text: string) => `'${text}'`
 const projectRoot = path.join(__dirname, "../..")
 const bin = quote(process.execPath.replaceAll("\\", "/"))
+it.instance("TMPDIR shorthand workdir agrees with shell environment", () =>
+  Effect.gen(function* () {
+    const tool = yield* initShell()
+    expect(tool.description).toContain("${TMPDIR}/opencode")
+    for (const workdir of ["${TMPDIR}/opencode", "$TMPDIR/opencode"]) {
+      const result = yield* run({
+        command: `${bin} -e "console.log(process.env.TMPDIR); console.log(process.cwd())"`,
+        workdir,
+      })
+      expect(result.output).toContain(path.dirname(Global.Path.tmp))
+      expect(result.output).toContain(realpathSync(Global.Path.tmp))
+    }
+  }),
+)
 const bash = (() => {
   const shell = Shell.acceptable()
   if (Shell.name(shell) === "bash") return shell

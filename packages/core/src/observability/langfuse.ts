@@ -113,19 +113,29 @@ export function content(value: unknown): string {
 
 export function generation<E, R>(
   stream: Stream.Stream<LLMEvent, E, R>,
-  input: { sessionID: string; model: string; provider: string; request: unknown },
+  input: { sessionID: string; model: string; provider: string; request: unknown | (() => unknown) },
 ) {
   if (!configured) return stream
   return Stream.unwrap(
     Effect.gen(function* () {
       const span = yield* Effect.currentSpan.pipe(Effect.orDie)
+      let capturedInput = false
       let text = ""
       let reasoning = ""
       const tools: unknown[] = []
       let usage: Usage | undefined
+      const captureInput = () => {
+        if (capturedInput) return
+        capturedInput = true
+        span.attribute(
+          "langfuse.observation.input",
+          content(typeof input.request === "function" ? input.request() : input.request),
+        )
+      }
       return stream.pipe(
         Stream.tap((event) =>
           Effect.sync(() => {
+            captureInput()
             if (event.type === "text-delta") text += event.text.slice(0, limit - text.length)
             if (event.type === "reasoning-delta") reasoning += event.text.slice(0, limit - reasoning.length)
             if (["tool-call", "tool-result", "tool-error"].includes(event.type) && tools.length < 64)
@@ -140,6 +150,7 @@ export function generation<E, R>(
         ),
         Stream.ensuring(
           Effect.sync(() => {
+            captureInput()
             span.attribute("langfuse.observation.output", content({ text, reasoning, tools }))
             if (usage)
               span.attribute(
@@ -162,7 +173,6 @@ export function generation<E, R>(
         "opencode.langfuse": true,
         "langfuse.observation.type": "generation",
         "langfuse.observation.model.name": input.model,
-        "langfuse.observation.input": content(input.request),
         "langfuse.session.id": input.sessionID,
         "gen_ai.system": input.provider,
       },

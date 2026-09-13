@@ -5,6 +5,7 @@ import { Effect, Layer, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Location } from "@opencode-ai/core/location"
 import { LocationMutation } from "@opencode-ai/core/location-mutation"
+import { Global } from "@opencode-ai/core/global"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { tmpdir } from "./fixture/tmpdir"
 import { location } from "./fixture/location"
@@ -29,6 +30,22 @@ function withTmp<A, E, R>(f: (directory: string) => Effect.Effect<A, E, R>) {
 }
 
 describe("LocationMutation", () => {
+  it.live("TMPDIR shorthand has the same canonical target and permissions as an absolute path", () =>
+    withTmp((directory) =>
+      Effect.gen(function* () {
+        const mutation = yield* LocationMutation.Service
+        const expected = yield* mutation.resolve({ path: path.join(Global.Path.tmp, "scratch.txt") })
+        expect(expected.externalDirectory).toBeDefined()
+        for (const token of ["${TMPDIR}", "$TMPDIR"]) {
+          expect(yield* mutation.resolve({ path: `${token}/opencode/scratch.txt` })).toEqual(expected)
+          expect(yield* mutation.resolve({ path: `${token}/opencode/../outside.txt` })).toEqual(
+            yield* mutation.resolve({ path: path.resolve(Global.Path.tmp, "../outside.txt") }),
+          )
+        }
+      }).pipe(provide(directory)),
+    ),
+  )
+
   it.live("resolves an active relative existing file target", () =>
     withTmp((directory) =>
       Effect.gen(function* () {

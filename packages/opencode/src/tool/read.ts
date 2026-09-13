@@ -3,6 +3,7 @@ import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as path from "path"
 import * as Tool from "./tool"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
@@ -231,7 +232,7 @@ export const ReadTool = Tool.define<
       ctx: Tool.Context<Metadata>,
     ) {
       const instance = yield* InstanceState.context
-      let filepath = params.filePath
+      let filepath = Global.expandTmpPath(params.filePath)
       if (!path.isAbsolute(filepath)) {
         filepath = path.resolve(instance.directory, filepath)
       }
