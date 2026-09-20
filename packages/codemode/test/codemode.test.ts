@@ -543,6 +543,90 @@ describe("CodeMode public contract", () => {
     }
   })
 
+  test("host discovery lists exact sorted names without leaking documentation", () => {
+    const names = Array.from({ length: 24 }, (_, index) => `tool${index}`)
+    const many = Object.fromEntries(
+      names.map((name, index) => [
+        name,
+        Tool.make({
+          description: `TOOL_DOC_MARKER_${index}`,
+          input: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: `SCHEMA_DOC_MARKER_${index}` },
+            },
+            required: ["id"],
+          } as const,
+          output: Schema.String,
+          run: () => Effect.succeed("ok"),
+        }),
+      ]),
+    )
+    const instructions = CodeMode.make({
+      tools: { bulk: many },
+      discovery: { catalogBudget: 0, hostDescribe: "Ask the host for the selected tool's exact signature." },
+    }).instructions()
+
+    const catalog = instructions.split("## Available tool names\n\n")[1]?.trim().split("\n")
+    expect(catalog).toEqual(names.sort().map((name) => `- bulk.${name}`))
+    expect(instructions).not.toContain("TOOL_DOC_MARKER")
+    expect(instructions).not.toContain("SCHEMA_DOC_MARKER")
+  })
+
+  test("host discovery instructions are independent of tool and schema documentation", () => {
+    const documented = (description: string, propertyDescription: string) =>
+      Tool.make({
+        description,
+        input: {
+          type: "object",
+          properties: { id: { type: "string", description: propertyDescription } },
+          required: ["id"],
+        } as const,
+        output: Schema.String,
+        run: () => Effect.succeed("ok"),
+      })
+    const instructions = (tool: ReturnType<typeof documented>) =>
+      CodeMode.make({
+        tools: { records: { lookup: tool } },
+        discovery: { hostDescribe: "Ask the host for the selected tool's exact signature." },
+      }).instructions()
+
+    expect(instructions(documented("Short", "Brief"))).toBe(
+      instructions(
+        documented("A very long tool description. ".repeat(100), "A very long field description. ".repeat(100)),
+      ),
+    )
+  })
+
+  test("host discovery keeps internal search registered without advertising it", async () => {
+    const runtime = CodeMode.make({
+      tools,
+      discovery: { hostDescribe: "Ask the host for the selected tool's exact signature." },
+    })
+    expect(runtime.instructions()).not.toContain("$codemode.search")
+
+    const result = await Effect.runPromise(runtime.execute(`return await tools.$codemode.search({ query: "order" })`))
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toStrictEqual({
+        items: [
+          {
+            path: "tools.orders.lookup",
+            description: "Look up an order by ID",
+            signature:
+              "tools.orders.lookup(input: {\n  id: string,\n}): Promise<{\n  id: string,\n  status: string,\n}>",
+          },
+        ],
+        remaining: 0,
+        next: null,
+      })
+    }
+  })
+
+  test("omitting discovery options preserves defaults", () => {
+    expect(CodeMode.make({ tools }).instructions()).toBe(CodeMode.make({ tools, discovery: {} }).instructions())
+  })
+
   test("renders bracket notation for tool names that are not JavaScript identifiers", async () => {
     const resolveLibrary = Tool.make({
       description: "Resolve a library ID",
@@ -658,20 +742,12 @@ describe("CodeMode public contract", () => {
     expect(instructions).toContain("URL, URLSearchParams, and URI encoding helpers")
     expect(instructions).not.toContain("host globals")
     expect(instructions).toContain("Use Code Mode tools for external operations")
-    expect(instructions).toContain(
-      "Dates and URLs serialize to strings at data boundaries; Map/Set/RegExp/URLSearchParams serialize to `{}`.",
-    )
   })
 
-  test("zero tools keep minimal sections and the no-tools notice", () => {
-    const runtime = CodeMode.make({})
-    const instructions = runtime.instructions()
-    expect(instructions).toContain("No tools are currently available.")
-    expect(instructions).toContain("## Language")
-    expect(instructions).toContain("## Available tools")
-    expect(instructions).not.toContain("## Workflow")
-    expect(instructions).not.toContain("## Rules")
-    expect(instructions).not.toMatch(/\$codemode/)
+  test("zero tools behave the same in both discovery modes", () => {
+    expect(CodeMode.make({}).instructions()).toBe(
+      CodeMode.make({ discovery: { hostDescribe: "Describe the selected tool." } }).instructions(),
+    )
   })
 
   test("uses one ranked search returning complete definitions for large catalogs", async () => {
@@ -1090,7 +1166,6 @@ describe("CodeMode public contract", () => {
     expect(() => CodeMode.execute({ code: "return 1", limits: { maxOutputBytes: -1 } })).toThrow(RangeError)
 
     expect(() => CodeMode.make({ tools, discovery: { catalogBudget: -1 } })).toThrow(RangeError)
-
     const result = await Effect.runPromise(
       CodeMode.make({
         tools,

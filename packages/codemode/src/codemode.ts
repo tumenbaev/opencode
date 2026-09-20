@@ -20,6 +20,12 @@ export type ExecutionLimits = {
 export type DiscoveryOptions = {
   /** Approximate token budget (chars/4, default 2000) for full catalog entries. */
   readonly catalogBudget?: number
+  /**
+   * Host-supplied workflow guidance for obtaining a selected tool's exact signature.
+   * When defined, instructions list every canonical tool name without inline tool
+   * descriptions, signatures, or runtime-search guidance.
+   */
+  readonly hostDescribe?: string
 }
 
 type ToolTree<R = never> = {
@@ -149,7 +155,7 @@ export const make = <const Tools extends Record<string, unknown> = {}>(
   const tools = (options.tools ?? {}) as HostTools<Services<Tools>>
   ToolRuntime.assertValidTools(tools)
   const limits = resolveExecutionLimits(options.limits)
-  const prepared = ToolRuntime.prepare(tools, options.discovery?.catalogBudget)
+  const prepared = ToolRuntime.prepare(tools, options.discovery?.catalogBudget, options.discovery?.hostDescribe)
 
   return {
     catalog: () => prepared.catalog,

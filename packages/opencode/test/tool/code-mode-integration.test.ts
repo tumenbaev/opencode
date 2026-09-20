@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test"
-import { CodeModeTool, describeCatalog } from "@/tool/code-mode"
+import { CodeModeTool, McpDescribeTool, describeCatalog } from "@/tool/code-mode"
 import { McpCatalog } from "@/mcp/catalog"
 import { Agent } from "@/agent/agent"
 import { MCP } from "@/mcp"
@@ -18,6 +18,9 @@ import {
   type Tool as MCPToolDef,
 } from "@modelcontextprotocol/sdk/types.js"
 import { Cause, Effect, Exit, Layer } from "effect"
+import { testEffect } from "../lib/effect"
+
+const it = testEffect(Layer.empty)
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
@@ -100,7 +103,10 @@ const TOOL_DEFS: MCPToolDef[] = [
   },
 ] as MCPToolDef[]
 
+let mcpCallCount = 0
+
 function handleCall(name: string, args: Record<string, unknown>) {
+  mcpCallCount += 1
   switch (name) {
     case "get_text":
       return { content: [{ type: "text", text: `hello ${args.name}` }] }
@@ -118,6 +124,7 @@ function handleCall(name: string, args: Record<string, unknown>) {
 }
 
 let tool: Awaited<ReturnType<typeof buildTool>>["tool"]
+let mcpDescribe: Awaited<ReturnType<typeof buildTool>>["mcpDescribe"]
 let description: string
 
 async function buildTool() {
@@ -153,8 +160,14 @@ async function buildTool() {
       clients: () => Effect.succeed({ [SERVER]: {} as any }),
     }),
   )
+  const [tool, mcpDescribe] = await Effect.runPromise(
+    Effect.all([CodeModeTool.pipe(Effect.flatMap(Tool.init)), McpDescribeTool.pipe(Effect.flatMap(Tool.init))]).pipe(
+      Effect.provide(layer),
+    ),
+  )
   return {
-    tool: await Effect.runPromise(CodeModeTool.pipe(Effect.flatMap(Tool.init), Effect.provide(layer))),
+    tool,
+    mcpDescribe,
     description: describeCatalog(mcpTools, [SERVER]),
   }
 }
@@ -170,24 +183,32 @@ const runFailed = async (code: string) => {
 beforeAll(async () => {
   const built = await buildTool()
   tool = built.tool
+  mcpDescribe = built.mcpDescribe
   description = built.description
 })
 
-describe("code mode integration (real MCP server)", () => {
-  test("the appended catalog inlines full signatures with real MCP schemas", () => {
-    expect(description).toContain("Available tools (COMPLETE list")
-    expect(description).toContain("- fixtures (4 tools)")
-    expect(description).toContain(
-      "tools.fixtures.add(input: {\n  a: number,\n  b: number,\n}): Promise<{\n  sum: number,\n}>",
-    )
-    expect(description).toContain("tools.fixtures.get_text(input: {\n  name: string,\n}): Promise<unknown>")
-    expect(description).toContain("// Add two numbers and return the structured sum")
-    expect(description).not.toContain("$codemode")
-    expect(description).toContain("## Workflow")
-    expect(description).toContain("Do not infer or normalize tool names")
-    expect(description).toContain("bracket notation and quotes are part of the path")
-    expect(description).not.toContain("total_count")
+describe("code mode integration (in-memory MCP server)", () => {
+  test("the appended catalog exposes the exact sorted names without documentation", () => {
+    expect(description.split("## Available tool names\n\n")[1]?.trim().split("\n")).toEqual([
+      "- fixtures.add",
+      "- fixtures.boom",
+      "- fixtures.get_text",
+      "- fixtures.screenshot",
+    ])
+    expect(description).not.toContain("Add two numbers and return the structured sum")
   })
+
+  it.effect("mcp_describe renders schemas obtained from the in-memory MCP server without calling tools/call", () =>
+    Effect.gen(function* () {
+      const before = mcpCallCount
+      const result = yield* mcpDescribe.execute({ name: "fixtures.add" }, ctx)
+      expect(result.output).toContain("fixtures.add\n\nAdd two numbers and return the structured sum")
+      expect(result.output).toContain(
+        "tools.fixtures.add(input: {\n  a: number,\n  b: number,\n}): Promise<{\n  sum: number,\n}>",
+      )
+      expect(mcpCallCount).toBe(before)
+    }),
+  )
 
   test("calls a text tool and receives its text as the native result", async () => {
     const out = await run("const r = await tools.fixtures.get_text({ name: 'world' }); return r")

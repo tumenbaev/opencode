@@ -457,6 +457,15 @@ const catalogLine = (tool: ToolDescription) => {
   return description === "" ? `  - ${tool.signature}` : `  - ${tool.signature} // ${description}`
 }
 
+const languageSection = [
+  "",
+  "## Language",
+  "",
+  "Built-ins include Date, RegExp, Map, Set, URL, URLSearchParams, and URI encoding helpers.",
+  "Modules/imports, classes, generators, timers, fetch, eval, prototype access, unlisted methods, and promise chaining are unavailable. Use Code Mode tools for external operations. Use await with try/catch.",
+  "Return the final result as a string.",
+]
+
 const toSearchEntry = <R>(path: string, definition: Definition<R>, description: ToolDescription): SearchEntry => ({
   description,
   namespace: path.split(".", 1)[0]!,
@@ -490,14 +499,22 @@ export const assertValidTools = <R>(tools: HostTools<R>): void => {
  * namespace gets some representation before any namespace gets everything. The section
  * states exactly how comprehensive it is - overall (COMPLETE vs PARTIAL) and per
  * namespace. Namespace stub lines are never budgeted: every namespace appears with its
- * tool count even at budget 0.
+ * tool count even at budget 0. When host describe guidance is supplied, presentation
+ * instead lists every canonical name and delegates exact-signature discovery to the host;
+ * the complete internal search index is retained in either mode.
  */
-export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBudget): DiscoveryPlan => {
+export const prepare = <R>(
+  tools: HostTools<R>,
+  catalogBudget = defaultCatalogBudget,
+  hostDescribe?: string,
+): DiscoveryPlan => {
   if (!Number.isSafeInteger(catalogBudget) || catalogBudget < 0) {
     throw new RangeError("discovery.catalogBudget must be a non-negative safe integer")
   }
   const visible = visibleDefinitions(tools)
   const described = visible.map(({ description }) => description)
+  const indexed = visible.map(({ path, definition, description }) => toSearchEntry(path, definition, description))
+  const hostDiscovery = hostDescribe !== undefined
 
   const namespaces = new Map<string, Array<ToolDescription>>()
   for (const tool of described) {
@@ -552,10 +569,10 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
   const intro = [
     empty
       ? "This is a restricted JavaScript language for calling tools, not a general-purpose runtime."
-      : complete
+      : hostDiscovery || complete
         ? "This is a restricted JavaScript language for calling tools, not a general-purpose runtime. Inside the confined interpreter, `tools` contains the Code Mode tools listed below and internal runtime tools; surrounding agent tools are not available."
         : "This is a restricted JavaScript language for calling tools, not a general-purpose runtime. Inside the confined interpreter, `tools` contains the Code Mode tools listed or searchable below and internal runtime tools; surrounding agent tools are not available.",
-    ...(empty
+    ...(empty || hostDiscovery
       ? []
       : ["Do not infer or normalize tool names; use only exact signatures shown below or returned by search."]),
   ]
@@ -568,16 +585,23 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
         "",
         "## Workflow",
         "",
-        ...(complete
+        ...(hostDiscovery
           ? [
-              "1. Pick a tool from the list under `## Available tools` - each line is the exact call signature; use it as-is rather than guessing segments.",
-              "2. Call it using the exact signature shown: `const result = await tools.<namespace>.<tool>(input)`; bracket notation and quotes are part of the path.",
-              "3. Return only the fields you need from structured results; narrow unknown results before reading fields, and avoid returning large raw payloads.",
+              "1. Pick a name from `## Available tool names`.",
+              `2. ${hostDescribe}`,
+              "3. Use the returned signature as-is; preserve any bracket notation and quotes it contains.",
+              "4. Return only the fields you need from structured results; narrow unknown results before reading fields, and avoid returning large raw payloads.",
             ]
-          : [
-              '1. If needed, discover tools: `return await tools.$codemode.search({ query: "<intent + key nouns>" })`.',
-              "2. In the next execution, copy a returned path exactly, call it, and return only the needed fields.",
-            ]),
+          : complete
+            ? [
+                "1. Pick a tool from the list under `## Available tools` - each line is the exact call signature; use it as-is rather than guessing segments.",
+                "2. Call it using the exact signature shown: `const result = await tools.<namespace>.<tool>(input)`; bracket notation and quotes are part of the path.",
+                "3. Return only the fields you need from structured results; narrow unknown results before reading fields, and avoid returning large raw payloads.",
+              ]
+            : [
+                '1. If needed, discover tools: `return await tools.$codemode.search({ query: "<intent + key nouns>" })`.',
+                "2. In the next execution, copy a returned path exactly, call it, and return only the needed fields.",
+              ]),
       ]
 
   const rules = empty
@@ -586,14 +610,14 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
         "",
         "## Rules",
         "",
-        complete
+        hostDiscovery || complete
           ? "- Only Code Mode tools listed here and internal runtime tools are available; surrounding agent tools are not implicitly exposed."
           : "- Only Code Mode tools listed here or returned by `tools.$codemode.search` and internal runtime tools are available; surrounding agent tools are not implicitly exposed.",
         "- Filter, aggregate, and transform collections in code - never return them raw or call a tool per item across messages.",
         "- A result typed `Promise<unknown>` may be structured data or text. Before reading fields, check that it is a non-null object and not an array; otherwise handle the returned text or primitive directly.",
-        '- Run independent calls in parallel: `await Promise.all(items.map((item) => tools.<namespace>.<tool>(item)))`, or use `tools.<namespace>["tool-name"](item)` when the listed signature uses bracket notation.',
+        "- Run independent tool calls in parallel.",
         "- `Object.keys(tools)` lists namespaces; `Object.keys(tools.<namespace>)` lists its tools; `for...in` works on both.",
-        ...(complete
+        ...(hostDiscovery || complete
           ? []
           : [
               '- Browse one namespace: `await tools.$codemode.search({ query: "", namespace: "<name>" })`.',
@@ -601,20 +625,17 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
             ]),
       ]
 
-  const language = [
-    "",
-    "## Language",
-    "",
-    "Use common JavaScript data operations, functions, control flow, selected standard-library methods, and awaited tool calls. Built-ins include Date, RegExp, Map, Set, URL, URLSearchParams, and URI encoding helpers.",
-    "Modules/imports, classes, generators, timers, fetch, eval, prototype access, unlisted methods, and promise chaining are unavailable. Use Code Mode tools for external operations. Use await with try/catch.",
-    "Dates and URLs serialize to strings at data boundaries; Map/Set/RegExp/URLSearchParams serialize to `{}`.",
-  ]
-
-  const toolSection: Array<string> = [""]
-  if (empty) {
-    toolSection.push("## Available tools", "", "No tools are currently available.")
-  } else {
+  const toolSection: Array<string> = []
+  if (!empty && hostDiscovery) {
     toolSection.push(
+      "",
+      "## Available tool names",
+      "",
+      ...[...described].sort((left, right) => left.path.localeCompare(right.path)).map((tool) => `- ${tool.path}`),
+    )
+  } else if (!empty) {
+    toolSection.push(
+      "",
       complete
         ? "## Available tools (COMPLETE list - every tool is shown below with its full call signature)"
         : `## Available tools (PARTIAL - ${totalShown} of ${described.length} shown; find the rest with tools.$codemode.search)`,
@@ -639,11 +660,11 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
     }
   }
 
-  const lines = [...intro, ...workflow, ...rules, ...language, ...toolSection]
+  const lines = [...intro, ...workflow, ...rules, ...languageSection, ...toolSection]
   return {
     catalog: described,
     instructions: lines.join("\n"),
-    searchIndex: visible.map(({ path, definition, description }) => toSearchEntry(path, definition, description)),
+    searchIndex: indexed,
   }
 }
 

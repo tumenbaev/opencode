@@ -30,6 +30,8 @@ import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { ProviderError } from "@/provider/error"
 import { Langfuse } from "@opencode-ai/core/observability/langfuse"
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
+import { CODE_MODE_TOOL, MCP_DESCRIBE_TOOL, describeCatalog } from "@/tool/code-mode"
+import { Client as MCPClient } from "@modelcontextprotocol/sdk/client/index.js"
 
 const NodeSdk = await import("@effect/opentelemetry/NodeSdk")
 
@@ -763,6 +765,114 @@ function createEventResponse(chunks: unknown[], includeDone = false) {
   return new Response(createEventStream(chunks, includeDone), {
     status: 200,
     headers: { "Content-Type": "text/event-stream" },
+  })
+}
+
+type NativeToolDefinition = {
+  name: string
+  description?: string
+}
+
+function parseNativeToolDefinitions(body: Record<string, unknown>): NativeToolDefinition[] {
+  if (!Array.isArray(body.tools)) throw new Error("native request did not include tool definitions")
+  return body.tools.map((definition) => {
+    if (typeof definition !== "object" || definition === null || !("name" in definition)) {
+      throw new Error("native request included an invalid tool definition")
+    }
+    if (typeof definition.name !== "string") throw new Error("native tool definition did not include a name")
+    const description = "description" in definition ? definition.description : undefined
+    if (description !== undefined && typeof description !== "string") {
+      throw new Error("native tool definition included an invalid description")
+    }
+    return { name: definition.name, description }
+  })
+}
+
+function captureNativeCodeModeTools(input: {
+  id: string
+  permission?: PermissionV1.Ruleset
+  userTools?: Record<string, boolean>
+}) {
+  return Effect.gen(function* () {
+    const model = loadFixture("openai", "gpt-5.2").model
+    let captured: Record<string, unknown> | undefined
+    const executor = Layer.mock(RequestExecutor.Service, {
+      execute: (request) =>
+        Effect.gen(function* () {
+          const web = yield* HttpClientRequest.toWeb(request).pipe(Effect.orDie)
+          captured = (yield* Effect.promise(() => web.json())) as Record<string, unknown>
+          return HttpClientResponse.fromWeb(
+            request,
+            createEventResponse(
+              [
+                {
+                  type: "response.completed",
+                  response: { incomplete_details: null, usage: { input_tokens: 1, output_tokens: 1 } },
+                },
+              ],
+              true,
+            ),
+          )
+        }),
+    })
+    const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
+    const sessionID = SessionID.make(`session-test-native-code-mode-${input.id}`)
+    const agent = {
+      name: "test",
+      mode: "primary",
+      options: {},
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    } satisfies Agent.Info
+
+    yield* drainWith(llmLayerWithExecutor({ executor, flags: { experimentalNativeLlm: true } }), {
+      user: {
+        id: MessageID.make(`msg_user-native-code-mode-${input.id}`),
+        sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: agent.name,
+        model: { providerID: ProviderV2.ID.openai, modelID: resolved.id },
+        tools: input.userTools,
+      } satisfies SessionV1.User,
+      sessionID,
+      model: resolved,
+      agent,
+      permission: input.permission,
+      system: [],
+      messages: [{ role: "user", content: "Use code mode" }],
+      tools: {
+        [CODE_MODE_TOOL]: tool({
+          description: [
+            "Run a confined orchestration script with access to connected MCP tools.",
+            describeCatalog(
+              {
+                weather_current: {
+                  def: {
+                    name: "current",
+                    description: "Current weather",
+                    inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+                  },
+                  client: new MCPClient({ name: "test", version: "1.0.0" }, { capabilities: {} }),
+                },
+              },
+              ["weather"],
+            ),
+          ].join("\n"),
+          inputSchema: z.object({ code: z.string() }),
+        }),
+        [MCP_DESCRIBE_TOOL]: tool({
+          description: "Describe one MCP tool by exact canonical name.",
+          inputSchema: z.object({ name: z.string() }),
+        }),
+        question: tool({
+          description: "Ask a question",
+          inputSchema: z.object({}),
+        }),
+      },
+    })
+
+    if (!captured) return yield* Effect.die("native request was not captured")
+    return parseNativeToolDefinitions(captured)
   })
 }
 
@@ -1671,6 +1781,86 @@ describe("session.llm.stream", () => {
           },
         ])
         expect(executed).toEqual({ args: { query: "weather" }, toolCallId: "call-injected-tool" })
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+  )
+
+  it.instance(
+    "filters execute from native definitions when denied without filtering mcp_describe",
+    () =>
+      Effect.gen(function* () {
+        const definitions = yield* captureNativeCodeModeTools({
+          id: "deny-execute",
+          permission: [{ permission: CODE_MODE_TOOL, pattern: "*", action: "deny" }],
+        })
+
+        expect(definitions.map((definition) => definition.name)).toEqual([MCP_DESCRIBE_TOOL, "question"])
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+  )
+
+  it.instance(
+    "filters mcp_describe from native definitions when denied without filtering execute",
+    () =>
+      Effect.gen(function* () {
+        const definitions = yield* captureNativeCodeModeTools({
+          id: "deny-mcp-describe",
+          permission: [{ permission: MCP_DESCRIBE_TOOL, pattern: "*", action: "deny" }],
+        })
+
+        expect(definitions.map((definition) => definition.name)).toEqual([CODE_MODE_TOOL, "question"])
+        expect(definitions.find((definition) => definition.name === CODE_MODE_TOOL)?.description).toContain(
+          'Call the native `mcp_describe({ name: "<exact canonical name>" })` tool',
+        )
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+  )
+
+  it.instance(
+    "filters only execute from native definitions when disabled for the user message",
+    () =>
+      Effect.gen(function* () {
+        const definitions = yield* captureNativeCodeModeTools({
+          id: "message-disables-execute",
+          userTools: { [CODE_MODE_TOOL]: false },
+        })
+
+        expect(definitions.map((definition) => definition.name)).toEqual([MCP_DESCRIBE_TOOL, "question"])
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+  )
+
+  it.instance(
+    "filters only mcp_describe from native definitions when disabled for the user message",
+    () =>
+      Effect.gen(function* () {
+        const definitions = yield* captureNativeCodeModeTools({
+          id: "message-disables-mcp-describe",
+          userTools: { [MCP_DESCRIBE_TOOL]: false },
+        })
+
+        expect(definitions.map((definition) => definition.name)).toEqual([CODE_MODE_TOOL, "question"])
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+  )
+
+  it.instance(
+    "keeps execute and mcp_describe advertised in native definitions when permissions ask",
+    () =>
+      Effect.gen(function* () {
+        const definitions = yield* captureNativeCodeModeTools({
+          id: "ask-code-mode-tools",
+          permission: [
+            { permission: CODE_MODE_TOOL, pattern: "*", action: "ask" },
+            { permission: MCP_DESCRIBE_TOOL, pattern: "*", action: "ask" },
+          ],
+        })
+
+        expect(definitions.map((definition) => definition.name)).toEqual([
+          CODE_MODE_TOOL,
+          MCP_DESCRIBE_TOOL,
+          "question",
+        ])
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
   )

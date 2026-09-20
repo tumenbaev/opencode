@@ -115,6 +115,7 @@ describe("tool.registry", () => {
       const ids = yield* registry.ids()
 
       expect(ids).not.toContain("execute")
+      expect(ids).not.toContain("mcp_describe")
     }),
   )
 
@@ -131,8 +132,15 @@ describe("tool.registry", () => {
       const execute = tools.find((tool) => tool.id === "execute")
 
       expect(ids).toContain("execute")
+      expect(ids).toContain("mcp_describe")
       expect(tools.map((tool) => tool.id)).toContain("execute")
-      expect(execute?.description).toContain("tools.weather.current(input: {\n  city: string,\n})")
+      expect(tools.map((tool) => tool.id)).toContain("mcp_describe")
+      expect(tools.map((tool) => tool.id)).not.toContain("weather_current")
+      expect(execute?.description).toContain("- weather.current")
+      expect(execute?.description).toContain("mcp_describe({ name:")
+      expect(execute?.description).not.toContain("city")
+      expect(execute?.description).not.toContain("current weather")
+      expect(execute?.description).not.toContain("$codemode.search")
     }),
   )
 
@@ -147,6 +155,22 @@ describe("tool.registry", () => {
       })
 
       expect(tools.map((tool) => tool.id)).not.toContain("execute")
+      expect(tools.map((tool) => tool.id)).not.toContain("mcp_describe")
+    }),
+  )
+
+  withCodeMode.instance("omits both code mode tools when session permissions deny every MCP tool", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.defaultInfo(),
+        permission: [{ permission: "weather_*", pattern: "*", action: "deny" }],
+      })
+      expect(tools.map((tool) => tool.id)).not.toContain("execute")
+      expect(tools.map((tool) => tool.id)).not.toContain("mcp_describe")
     }),
   )
 

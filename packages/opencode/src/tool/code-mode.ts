@@ -10,6 +10,7 @@ import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 
 export const CODE_MODE_TOOL = "execute"
+export const MCP_DESCRIBE_TOOL = "mcp_describe"
 
 const DESCRIPTION = "Run a confined orchestration script with access to connected MCP tools."
 
@@ -17,6 +18,10 @@ export const Parameters = Schema.Struct({
   code: Schema.String.annotate({
     description: "Script body executed by the confined interpreter.",
   }),
+})
+
+export const DescribeParameters = Schema.Struct({
+  name: Schema.String.annotate({ description: "Exact canonical MCP tool name from the available names catalog." }),
 })
 
 type CallEntry = { tool: string; status: "running" | "completed" | "error"; input?: Record<string, unknown> }
@@ -55,13 +60,21 @@ function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly 
   return groups
 }
 
-export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
+function catalogRuntime(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]) {
   return CodeMode.make({
+    discovery: {
+      hostDescribe:
+        'Call the native `mcp_describe({ name: "<exact canonical name>" })` tool to obtain the full description and documented callable signature. Then call the native `execute({ code: "<script>" })` tool with that signature inside the script. These are native tool calls, not methods on `tools`.',
+    },
     tools: toolTree(
       [...groupByServer(mcpTools, servers).values()].flat(),
       () => () => Effect.fail(toolError("Tool preview is not executable.")),
     ),
-  }).instructions()
+  })
+}
+
+export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
+  return catalogRuntime(mcpTools, servers).instructions()
 }
 
 const lastSegment = (uri: string) => {
@@ -185,6 +198,44 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   return result
 })
 
+const visibleCatalog = Effect.fn("CodeMode.visibleCatalog")(function* (
+  services: { mcp: MCP.Interface; agents: Agent.Interface; sessions: Session.Interface },
+  ctx: Tool.Context,
+) {
+  const agent = yield* services.agents.get(ctx.agent)
+  const session = yield* services.sessions.get(ctx.sessionID).pipe(Effect.orDie)
+  const ruleset = Permission.merge(agent.permission, session.permission ?? [])
+  return {
+    tools: Permission.visibleTools(yield* services.mcp.tools(), ruleset),
+    servers: Object.keys(yield* services.mcp.clients()).map(McpCatalog.sanitize),
+  }
+})
+
+export const McpDescribeTool = Tool.define(
+  MCP_DESCRIBE_TOOL,
+  Effect.gen(function* () {
+    const mcp = yield* MCP.Service
+    const agents = yield* Agent.Service
+    const sessions = yield* Session.Service
+    return {
+      description: "Describe one MCP tool by exact canonical name, including its documented callable signature.",
+      parameters: DescribeParameters,
+      execute: Effect.fn("CodeMode.describe")(function* (params, ctx) {
+        const catalog = yield* visibleCatalog({ mcp, agents, sessions }, ctx)
+        const tool = catalogRuntime(catalog.tools, catalog.servers)
+          .catalog()
+          .find((tool) => tool.path === params.name)
+        if (!tool) return yield* Effect.fail(new Error("Unknown or unavailable MCP tool."))
+        return {
+          title: tool.path,
+          metadata: {},
+          output: `${tool.path}\n\n${tool.description}\n\n${tool.signature}`,
+        }
+      }, Effect.orDie),
+    } satisfies Tool.DefWithoutID<typeof DescribeParameters>
+  }),
+)
+
 export const CodeModeTool = Tool.define(
   CODE_MODE_TOOL,
   Effect.gen(function* () {
@@ -204,12 +255,8 @@ export const CodeModeTool = Tool.define(
             output: "Execution cancelled.",
           } satisfies Tool.ExecuteResult<Metadata>
         }
-        const agent = yield* agents.get(ctx.agent)
-        const session = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
-        const ruleset = Permission.merge(agent.permission, session.permission ?? [])
-        const mcpTools = Permission.visibleTools(yield* mcp.tools(), ruleset)
-        const servers = Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize)
-        const catalog = [...groupByServer(mcpTools, servers).values()].flat()
+        const visible = yield* visibleCatalog({ mcp, agents, sessions }, ctx)
+        const catalog = [...groupByServer(visible.tools, visible.servers).values()].flat()
 
         const calls: CallEntry[] = []
         const attachments: Attachment[] = []

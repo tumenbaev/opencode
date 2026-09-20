@@ -117,6 +117,7 @@ const layer = Layer.effect(
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
+    const mcpDescribeTool = codeMode ? yield* codeMode.McpDescribeTool : undefined
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -224,6 +225,7 @@ const layer = Layer.effect(
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
+          ...(mcpDescribeTool ? { mcp_describe: Tool.init(mcpDescribeTool) } : {}),
         })
 
         return {
@@ -244,6 +246,7 @@ const layer = Layer.effect(
             tool.skill,
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
+            ...(tool.mcp_describe ? [tool.mcp_describe] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
@@ -305,7 +308,9 @@ const layer = Layer.effect(
       const codeModeDescription = filtered.some((tool) => tool.id === "execute")
         ? yield* describeCodeMode(input)
         : undefined
-      const visible = filtered.filter((tool) => tool.id !== "execute" || codeModeDescription)
+      const visible = filtered.filter(
+        (tool) => (tool.id !== "execute" && tool.id !== "mcp_describe") || codeModeDescription,
+      )
 
       return yield* Effect.forEach(
         visible,
