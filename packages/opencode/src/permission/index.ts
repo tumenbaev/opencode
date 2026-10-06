@@ -119,12 +119,10 @@ const layer = Layer.effect(
       })
 
       if (input.reply === "reject") {
-        yield* Deferred.fail(
-          existing.deferred,
-          input.message
-            ? new PermissionV1.CorrectedError({ feedback: input.message })
-            : new PermissionV1.RejectedError(),
-        )
+        const error = input.message
+          ? new PermissionV1.CorrectedError({ feedback: input.message })
+          : new PermissionV1.RejectedError()
+        yield* Deferred.fail(existing.deferred, error)
 
         for (const [id, item] of pending.entries()) {
           if (item.info.sessionID !== existing.info.sessionID) continue
@@ -134,7 +132,7 @@ const layer = Layer.effect(
             requestID: item.info.id,
             reply: "reject",
           })
-          yield* Deferred.fail(item.deferred, new PermissionV1.RejectedError())
+          yield* Deferred.fail(item.deferred, error)
         }
         return
       }
