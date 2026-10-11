@@ -1598,15 +1598,7 @@ export function Prompt(props: PromptProps) {
   })
 
   const placeholderText = createMemo(() => {
-    const value = (() => {
-      if (store.mode === "shell") {
-        if (!shell().length) return undefined
-        return `Run a command… "${shell()[store.placeholder % shell().length]}"`
-      }
-      if (!list().length) return undefined
-      return `Ask anything… "${list()[store.placeholder % list().length]}"`
-    })()
-    if (!value) return undefined
+    const value = store.mode === "shell" ? "Run a command…" : "Ask anything…"
     const width = dimensions().width < 44 ? dimensions().width - 5 : Math.min(75, dimensions().width - 4) - 5
     return Locale.takeWidth(value, Math.max(1, width)).trimEnd()
   })
