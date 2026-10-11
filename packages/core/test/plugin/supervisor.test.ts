@@ -1,7 +1,9 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Duration, Effect, Layer, LayerMap, Stream } from "effect"
 import { TestClock } from "effect/testing"
+import { OpenAIChat } from "@opencode/ai/protocols"
 import { define } from "@opencode/plugin/effect/plugin"
+import { Agent } from "@opencode/core/agent"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
@@ -11,6 +13,11 @@ import { Instance } from "@opencode/core/instance"
 import { LocationServiceMap } from "@opencode/core/location-services"
 import { Location } from "@opencode/core/location"
 import { Plugin } from "@opencode/core/plugin"
+import { Session } from "@opencode/core/session"
+import { SessionModelRequest } from "@opencode/core/session/model-request"
+import { SessionModelTransport } from "@opencode/core/session/model-transport"
+import { SessionRunnerModel } from "@opencode/core/session/runner/model"
+import { Tool } from "@opencode/core/tool"
 import { SdkPlugins } from "@opencode/core/plugin/sdk"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Database } from "../../src/database/database"
@@ -69,7 +76,7 @@ const instances = Layer.effect(
 )
 
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SdkPlugins.node, LocationServiceMap.node]), [
+  AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SdkPlugins.node, LocationServiceMap.node, Session.node]), [
     Global.node.replace(tempGlobalLayer),
     offlineModels,
     LocationServiceMap.node.replace(instances),
@@ -77,6 +84,63 @@ const it = testEffect(
 )
 
 describe("PluginSupervisor", () => {
+  it.live("assembles shipped and custom system prompts without model identity or coaching", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const locations = yield* LocationServiceMap.Service
+      const location = Location.Ref.make({ directory: AbsolutePath.make(directory.path) })
+      yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        const agents = yield* Agent.Service
+        const registry = yield* Tool.Service
+        const tools = yield* registry.snapshot()
+        const requests = yield* SessionModelRequest.Service.pipe(
+          Effect.provide(SessionModelRequest.layer),
+          Effect.provideService(SessionModelTransport.Service, {
+            bind: () => ({ execute: () => Effect.die("Unexpected WebSocket execution") }),
+            close: () => Effect.void,
+            closeAll: Effect.void,
+          }),
+        )
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ location })
+        const model = SessionRunnerModel.resolved(OpenAIChat.route.model({ id: "gpt-5", provider: "openai" }), {
+          capabilities: { tools: true, input: ["text"], output: ["text"] },
+          cost: [],
+          limit: { context: 200_000, output: 32_000 },
+        })
+        const shipped =
+          "In chat, It's important to provide visibility about the progress regularly to keep user informed\n\n" +
+          "Use dedicated tools: glob (not find/ls), grep (not grep/rg), read (not cat/head/tail), patch (not sed/awk or echo/cat).\n"
+        for (const system of [undefined, "Custom agent instructions"]) {
+          yield* agents.transform((editor) =>
+            editor.update(Agent.defaultID, (agent) => {
+              agent.system = system
+            }),
+          )
+          const agent = yield* agents.get(Agent.defaultID)
+          if (!agent) throw new Error("Expected shipped default agent")
+          const transcript = SessionModelRequest.baseTranscript({
+            agent,
+            model,
+            tools,
+            initial: "Durable instructions",
+            messages: [],
+          })
+          const prepared = yield* requests.primary({ session, agent: agent.id, model, tools, ...transcript })
+          expect(prepared.request.system.map((part) => part.text)).toEqual([system ?? shipped, "Durable instructions"])
+        }
+        expect((yield* agents.get(Agent.ID.make("title")))?.system).toBe(
+          "Generate a brief 2-5 word title that describes user input. Output ONLY a title.",
+        )
+        expect(yield* registry.list()).toContainEqual(
+          expect.objectContaining({ name: "session_move", options: expect.objectContaining({ namespace: "opencode" }) }),
+        )
+      }).pipe(Effect.scoped, Effect.provide(locations.get(location)))
+    }),
+  )
+
   it.live("reports a duplicate plugin ID as a failure without dropping the generation", () =>
     Effect.gen(function* () {
       const sdk = yield* SdkPlugins.Service

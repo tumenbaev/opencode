@@ -89,6 +89,7 @@ export const Plugin = {
   effect: Effect.fn("OpenCodeTools.Plugin")(function* (ctx: Context) {
     const access = yield* FileAccess.Service
     const permission = yield* Permission.Service
+    // @ts-expect-error Retain the unused upstream hook; worktree guidance stays disabled.
     const hook = (event: SessionHooks["context"]) =>
       Effect.sync(() => {
         event.system.push(
@@ -97,9 +98,9 @@ export const Plugin = {
           ),
         )
       })
-    yield* ctx.session.hook("context", hook)
-    yield* ctx.session.hook("compaction", hook)
-    yield* ctx.session.hook("generate", hook)
+    // yield* ctx.session.hook("context", hook)
+    // yield* ctx.session.hook("compaction", hook)
+    // yield* ctx.session.hook("generate", hook)
     yield* ctx.tool
       .transform((draft) => {
         draft.namespace({
