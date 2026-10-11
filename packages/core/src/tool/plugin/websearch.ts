@@ -17,9 +17,8 @@ const httpErrors = new Map([
   [401, "Web search authentication failed (HTTP 401)"],
 ])
 
-export const description = `Search the web using the user's selected search integration. Use this for current information beyond knowledge cutoff.
-
-The current year is ${new Date().getFullYear()}. Use this year when searching for recent information or current events.`
+export const description =
+  "Performs real-time web searches. Use for current events, recent data, and information beyond the knowledge cutoff."
 
 export const Input = Schema.Struct({
   query: Schema.String.annotate({ description: "Websearch query" }),
