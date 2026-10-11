@@ -59,6 +59,43 @@ describe("Patch", () => {
     ])
   })
 
+  test("parses a file move without content hunks", () => {
+    expect(parse("*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch")).toEqual([
+      { type: "update", path: "old.txt", movePath: "new.txt", chunks: [] },
+    ])
+  })
+
+  test("parses consecutive file moves without content hunks", () => {
+    expect(
+      parse(
+        "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** Update File: old2.txt\n*** Move to: new2.txt\n*** End Patch",
+      ),
+    ).toEqual([
+      { type: "update", path: "old.txt", movePath: "new.txt", chunks: [] },
+      { type: "update", path: "old2.txt", movePath: "new2.txt", chunks: [] },
+    ])
+  })
+
+  test("parses moves without content hunks alongside other operations", () => {
+    expect(
+      parse(
+        "*** Begin Patch\n*** Update File: first.txt\n*** Move to: moved-first.txt\n*** Add File: added.txt\n+added\n*** Update File: second.txt\n*** Move to: moved-second.txt\n*** Delete File: deleted.txt\n*** Update File: third.txt\n*** Move to: moved-third.txt\n*** Update File: updated.txt\n@@\n-before\n+after\n*** End Patch",
+      ),
+    ).toEqual([
+      { type: "update", path: "first.txt", movePath: "moved-first.txt", chunks: [] },
+      { type: "add", path: "added.txt", contents: "added" },
+      { type: "update", path: "second.txt", movePath: "moved-second.txt", chunks: [] },
+      { type: "delete", path: "deleted.txt" },
+      { type: "update", path: "third.txt", movePath: "moved-third.txt", chunks: [] },
+      {
+        type: "update",
+        path: "updated.txt",
+        movePath: undefined,
+        chunks: [{ oldLines: ["before"], newLines: ["after"], changeContext: undefined }],
+      },
+    ])
+  })
+
   test("identifies the missing patch boundary", () => {
     expect(() => parse("This is not a valid patch")).toThrow("The first line of the patch must be '*** Begin Patch'")
     expect(() => parse("*** Begin Patch\n*** Add File: add.txt\n+added")).toThrow(
@@ -477,16 +514,17 @@ describe("Patch", () => {
       "Invalid hunk at line 2: Update file hunk for path 'file.txt' is empty",
     )
     expect(() =>
-      parse(
-        "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** Delete File: other.txt\n*** End Patch",
-      ),
-    ).toThrow("Invalid hunk at line 2: Update file hunk for path 'old.txt' is empty")
+      parse("*** Begin Patch\n*** Update File: file.txt\n*** Delete File: other.txt\n*** End Patch"),
+    ).toThrow("Invalid hunk at line 2: Update file hunk for path 'file.txt' is empty")
     expect(() => parse("*** Begin Patch\n*** Update File: file.txt\n*** End of File\n*** End Patch")).toThrow(
       "Invalid hunk at line 2: Update file hunk for path 'file.txt' is empty",
     )
   })
 
   test("rejects an empty update chunk", () => {
+    expect(() => parse("*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n*** End Patch")).toThrow(
+      "Invalid hunk at line 5: Update hunk does not contain any lines",
+    )
     expect(() => parse("*** Begin Patch\n*** Update File: file.txt\n@@\n*** End Patch")).toThrow(
       "Invalid hunk at line 4: Update hunk does not contain any lines",
     )
