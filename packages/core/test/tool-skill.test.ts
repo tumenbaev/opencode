@@ -31,6 +31,51 @@ const skillToolNode = makeLocationNode({
 const sessionID = Session.ID.make("ses_skill_tool_test")
 
 describe("SkillTool", () => {
+  for (const count of [0, 1, 10, 11]) {
+    it.live(`formats minimal content with ${count} companion files`, () =>
+      Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      ).pipe(
+        Effect.flatMap((tmp) =>
+          Effect.gen(function* () {
+            const directory = tmp.path
+            const hidden = path.join(directory, ".resources")
+            yield* Effect.promise(() => fs.mkdir(hidden))
+            yield* Effect.promise(() =>
+              Promise.all([
+                fs.writeFile(path.join(directory, "SKILL.md"), "unused"),
+                // Nested SKILL.md files and directories must not count as companions.
+                fs.writeFile(path.join(hidden, "SKILL.md"), "unused"),
+                ...Array.from({ length: count }, (_, index) =>
+                  fs.writeFile(path.join(hidden, `.guide-${index}.md`), "reference"),
+                ),
+              ]),
+            )
+            const skill = Skill.Info.make({
+              id: Skill.ID.make("minimal"),
+              name: Skill.Name.make("Do not inject this name"),
+              path: AbsolutePath.make(path.join(directory, "SKILL.md")),
+              content: "  # Instructions\n\nUse the guidance.\n",
+            })
+            const fsUtil = yield* FSUtil.Service
+            const expected =
+              count === 0
+                ? "<skill_content>\n# Instructions\n\nUse the guidance.\n</skill_content>"
+                : `<skill_content>\n# Instructions\n\nUse the guidance.\n\nBase directory: ${directory}\n</skill_content>`
+            expect(yield* Skill.prepare(fsUtil, skill)).toEqual({ directory, output: expected })
+            expect(
+              Skill.toModelOutput(
+                skill,
+                Array.from({ length: count }, (_, index) => path.join(hidden, `.guide-${index}.md`)),
+              ),
+            ).toBe(expected)
+          }).pipe(Effect.provide(AppNodeBuilder.build(FSUtil.node))),
+        ),
+      ),
+    )
+  }
+
   it.effect("refuses a policy-blocked skill before authorization or content preparation", () =>
     Effect.gen(function* () {
       const skills = yield* Skill.Service
@@ -122,7 +167,7 @@ describe("SkillTool", () => {
             const registry = yield* Tool.Service
             expect((yield* toolDefinitions(registry))[0]).toMatchObject({
               name: "skill",
-              description: SkillTool.description,
+              description: "",
             })
             expect(
               yield* executeTool(registry, {
@@ -134,7 +179,9 @@ describe("SkillTool", () => {
               status: "completed",
               content: [{ type: "text", text: Skill.toModelOutput(info, [reference]) }],
             })
-            expect(Skill.toModelOutput(info, [reference])).toContain(`Base directory for this skill: ${directory}`)
+            expect(Skill.toModelOutput(info, [reference])).toBe(
+              `<skill_content>\n# Effect\n\nGuidance\n\nBase directory: ${directory}\n</skill_content>`,
+            )
             expect(
               yield* executeTool(registry, {
                 sessionID,
@@ -195,7 +242,7 @@ describe("SkillTool", () => {
               }),
             ).toMatchObject({
               status: "completed",
-              content: [{ type: "text", text: Skill.toModelOutput(flat, []) }],
+              content: [{ type: "text", text: "<skill_content>\nPublic\n</skill_content>" }],
             })
           }).pipe(Effect.provide(skillToolLayer))
         }),
