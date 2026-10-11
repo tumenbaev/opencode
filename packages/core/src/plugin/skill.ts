@@ -23,6 +23,9 @@ const REPORT_DESCRIPTION =
 export const Plugin = define({
   id: "opencode.skill",
   effect: Effect.fn(function* (ctx) {
+    // Disable builtin skills before capturing diagnostics; retain the upstream body for easier merges.
+    return
+
     const reportContent = yield* reportContentWithDiagnostics(ctx.app)
     yield* ctx.skill.transform((editor) => {
       editor.add(

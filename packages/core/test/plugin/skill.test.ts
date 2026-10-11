@@ -19,7 +19,23 @@ const config = (plugins: Info["plugins"] = []) =>
   )
 
 describe("SkillPlugin.Plugin", () => {
-  it.effect("registers built-in skills", () =>
+  it.effect("does not register builtin skills or capture diagnostics", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      // The default host fails if the plugin attempts skill registration.
+      yield* SkillPlugin.Plugin.effect(host()).pipe(
+        Effect.provide(
+          Layer.mock(Config.Service, {
+            entries: () => Effect.die("Disabled builtin skills must not capture diagnostics"),
+          }),
+        ),
+      )
+      expect(yield* skill.list()).toEqual([])
+    }),
+  )
+
+  // Builtin registration is disabled; retain the upstream assertions for easier merges.
+  it.effect.skip("registers built-in skills", () =>
     Effect.gen(function* () {
       const skill = yield* Skill.Service
       yield* SkillPlugin.Plugin.effect(
@@ -54,7 +70,7 @@ describe("SkillPlugin.Plugin", () => {
     }),
   )
 
-  it.effect("reports canonical configured plugin sources with existing labels and ordering", () =>
+  it.effect.skip("reports canonical configured plugin sources with existing labels and ordering", () =>
     Effect.gen(function* () {
       const skill = yield* Skill.Service
       yield* SkillPlugin.Plugin.effect(
