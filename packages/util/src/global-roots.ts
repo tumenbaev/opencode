@@ -14,6 +14,7 @@ export function roots(app: string) {
     cache: path.join(cache!, app),
     config: path.join(config!, app),
     state: path.join(state!, app),
-    tmp: path.join(os.tmpdir(), app),
+    // Keep the existing test harness's TMPDIR isolation on Linux.
+    tmp: path.join(process.platform === "linux" && !process.env.OPENCODE_TEST_HOME ? "/tmp" : os.tmpdir(), app),
   }
 }

@@ -22,6 +22,7 @@ describe("global", () => {
         // os.tmpdir() reads TMPDIR on POSIX and TEMP on Windows.
         TMPDIR: directories[4],
         TEMP: directories[4],
+        OPENCODE_TEST_HOME: root,
       },
       stderr: "pipe",
     })
@@ -75,6 +76,7 @@ describe("global", () => {
         // os.tmpdir() reads TMPDIR on POSIX and TEMP on Windows.
         TMPDIR: directories[4],
         TEMP: directories[4],
+        OPENCODE_TEST_HOME: root,
       },
       stdout: "pipe",
       stderr: "pipe",

@@ -32,9 +32,16 @@ const it = testEffect(
     Global.node.replace(Global.layerWith({ config: temporary, tmp: temporary })),
   ]),
 )
+const sameRoot = testEffect(
+  AppNodeBuilder.build(InstructionBuiltIns.node, [
+    Location.node.replace(Layer.succeed(Location.Service, Location.Service.of(location({ directory })))),
+    Global.node.replace(Global.layerWith({ config: temporary, tmp: temporary })),
+  ]),
+)
 
 describe("InstructionBuiltIns", () => {
-  it.effect("loads location-scoped environment and host-local date instructions", () =>
+  // Fork instructions omit dates and use a compact environment block.
+  it.effect.skip("loads location-scoped environment and host-local date instructions", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(timestamp)
       const context = yield* InstructionBuiltIns.Service
@@ -57,7 +64,7 @@ describe("InstructionBuiltIns", () => {
     }),
   )
 
-  it.effect("updates the date without repeating unchanged environment instructions", () =>
+  it.effect.skip("updates the date without repeating unchanged environment instructions", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(timestamp)
       const context = yield* InstructionBuiltIns.Service
@@ -78,6 +85,44 @@ describe("InstructionBuiltIns", () => {
 
       yield* TestClock.setTime(timestamp + 60 * 60 * 1000)
       expect((yield* readUpdate(yield* context.load(), initialized)).changed).toBe(false)
+    }),
+  )
+
+  it.effect("loads compact location-scoped environment instructions without date or git status", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(timestamp)
+      const context = yield* InstructionBuiltIns.Service
+      const initialized = yield* readInitial(yield* context.load())
+
+      expect(initialized.text).toBe(
+        [
+          `<env>Working directory: ${directory}; Workspace root folder: ${projectDirectory}; OS: ${process.platform}</env>`,
+          "",
+          `Use \`${temporary}\` for temporary work outside the workspace. It already exists and is pre-approved for external-directory access.`,
+        ].join("\n"),
+      )
+    }),
+  )
+
+  it.effect("does not inject instruction updates when the date changes", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(timestamp)
+      const context = yield* InstructionBuiltIns.Service
+      const initialized = yield* readInitial(yield* context.load())
+
+      yield* TestClock.setTime(timestamp + 24 * 60 * 60 * 1000)
+      const refreshed = yield* readUpdate(yield* context.load(), initialized)
+
+      expect(refreshed.changed).toBe(false)
+    }),
+  )
+
+  sameRoot.effect("omits the workspace root when it matches the working directory", () =>
+    Effect.gen(function* () {
+      const context = yield* InstructionBuiltIns.Service
+      const initialized = yield* readInitial(yield* context.load())
+      expect(initialized.text).toContain(`<env>Working directory: ${directory}; OS: ${process.platform}</env>`)
+      expect(initialized.text).not.toContain("Workspace root")
     }),
   )
 })
