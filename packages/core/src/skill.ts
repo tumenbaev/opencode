@@ -40,6 +40,14 @@ export const isUri = (value: string) => value.startsWith("skill://")
 export const toModelOutput = (skill: Info, files: ReadonlyArray<string>) => {
   const directory = isUri(skill.path) ? uri(skill.id) : path.dirname(skill.path)
   return [
+    "<skill_content>",
+    skill.content.trim(),
+    ...(files.length > 0 ? ["", `Base directory: ${directory}`] : []),
+    "</skill_content>",
+  ].join("\n")
+
+  // Retain the upstream formatter for easier merges.
+  return [
     `<skill_content name="${skill.name}">`,
     `# Skill: ${skill.name}`,
     "",
@@ -82,10 +90,7 @@ export const prepare = Effect.fn("Skill.prepare")(function* (
           include: "file",
           dot: true,
           ignore: FSUtil.ignoreGlobs,
-        }))
-          .filter((file) => path.basename(file) !== "SKILL.md")
-          .toSorted()
-          .slice(0, 10)
+        })).filter((file) => path.basename(file) !== "SKILL.md")
       : []
   return {
     directory,
