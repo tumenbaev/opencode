@@ -579,6 +579,44 @@ test("direct footer describes commands and context and shows the model provider"
   }
 })
 
+test.each([
+  { width: 24, mono: false },
+  { width: 100, mono: false },
+  { width: 24, mono: true },
+  { width: 100, mono: true },
+])("direct footer keeps example-free shell placeholders ($width columns, mono=$mono)", async (options) => {
+  const app = await renderFooter({ ...options, state: { first: true } })
+  try {
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("Ask anything,")
+    if (options.width === 100) {
+      expect(app.captureCharFrame()).toContain(
+        `Ask anything, / for commands, @ for context${options.mono ? "..." : "…"}`,
+      )
+    }
+    app.setState((state) => ({ ...state, first: false }))
+    await app.renderOnce()
+    expect(app.captureCharFrame()).not.toContain("Ask anything")
+
+    app.mockInput.pressKey("!")
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("Run a command…")
+    expect(app.captureCharFrame()).not.toContain("git status")
+    await app.mockInput.typeText("pwd")
+    await app.renderOnce()
+    expect(app.captureCharFrame()).not.toContain("Run a command")
+    app.mockInput.pressKey("u", { ctrl: true })
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("Run a command…")
+    app.mockInput.pressEscape()
+    await app.renderOnce()
+    expect(app.captureCharFrame()).not.toContain("Run a command")
+    expect(app.captureCharFrame()).not.toContain("Ask anything")
+  } finally {
+    app.cleanup()
+  }
+})
+
 test.each([56, 160])("exit confirmation replaces routine footer details at %i columns", async (width) => {
   const app = await renderFooter({
     width,
