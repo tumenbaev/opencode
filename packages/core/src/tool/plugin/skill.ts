@@ -40,7 +40,7 @@ export const Plugin = {
         editor.add({
           name,
           options: { codemode: false },
-          description,
+          description: "",
           input: Input,
           output: Output,
           execute: (input, context) =>

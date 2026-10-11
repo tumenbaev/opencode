@@ -154,7 +154,7 @@ describe("Session.skill", () => {
             {
               id: "effect",
               name: "Effect",
-              text: Skill.toModelOutput(info, []),
+              text: "<skill_content>\nUse Effect\n</skill_content>",
               mention: { start: 6, end: 13, text: "@effect" },
             },
             {
