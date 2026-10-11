@@ -9,16 +9,8 @@ import { Question } from "@opencode/schema/question"
 
 export const name = "question"
 
-export const description = `Use this tool when you need to ask the user questions during execution. This allows you to:
-1. Gather user preferences or requirements
-2. Clarify ambiguous instructions
-3. Get decisions on implementation choices as you work
-4. Offer choices to the user about what direction to take.
-
-Usage notes:
-- A "Type your own answer" option is added automatically; don't include a separate option for free form answers
-- Set \`multiple: true\` to allow selecting more than one option
-- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`
+export const description =
+  "Asks the user questions to gather information, clarify ambiguity, understand preferences, make decisions or offer them choices."
 
 export const Input = Schema.Struct({
   questions: Schema.Array(Question.Prompt).check(Schema.isNonEmpty()).annotate({ description: "Questions to ask" }),

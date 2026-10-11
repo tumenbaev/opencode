@@ -68,7 +68,7 @@ export const Input = Schema.Struct({
   timeout: timeoutInput(DEFAULT_TIMEOUT_MS),
   background: Schema.optionalKey(Schema.Boolean).annotate({
     description:
-      "Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.",
+      "Run the command in the background and return immediately. You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.",
   }),
 })
 
@@ -380,7 +380,7 @@ export const Plugin = {
           // With full_codemode, shell is called as `tools.shell` inside `execute` instead of as a direct tool, and is
           // pinned so the Code Mode catalog always lists it, however many other tools there are.
           options: codeMode ? { codemode: true, pinned: true } : { codemode: false },
-          description: description(undefined, codeMode),
+          description: codeMode ? description(undefined, true) : "",
           input: codeMode ? CodeModeInput : Input,
           output: StructuredOutput,
           execute: (input, context) => {
@@ -522,7 +522,8 @@ export const Plugin = {
       Effect.gen(function* () {
         const tool = event.tools[name]
         if (!tool) return
-        tool.description = description(ShellSelect.name(yield* compatibleShell))
+        const selected = ShellSelect.name(yield* compatibleShell)
+        tool.description = selected ? `Uses ${selected}` : ""
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)
