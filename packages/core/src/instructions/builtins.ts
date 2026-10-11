@@ -1,8 +1,9 @@
 export * as InstructionBuiltIns from "./builtins.js"
 
 import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { Context, DateTime, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 import { Global } from "@opencode/util/global"
+import { FSUtil } from "@opencode/util/fs-util"
 import { Location } from "../location.js"
 import { Instructions } from "./index.js"
 
@@ -17,36 +18,34 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const global = yield* Global.Service
     const location = yield* Location.Service
+    const fs = yield* FSUtil.Service
+    const defaultTmp =
+      process.platform === "darwin"
+        ? yield* fs.realPath(Global.Path.tmp).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined
+    const temporary = process.platform === "darwin" && global.tmp === defaultTmp ? "${TMPDIR}/opencode" : global.tmp
     return Service.of({
       load: () =>
         Effect.succeed(
           Instructions.combine([
             Instructions.make({
-              key: Instructions.Key.make("core/date"),
-              codec: Schema.toCodecJson(Schema.String),
-              read: DateTime.nowAsDate.pipe(Effect.map((date) => date.toDateString())),
-              render: {
-                initial: (date) => `Today's date: ${date}`,
-                changed: (_previous, date) => `Today's date is now: ${date}`,
-              },
-            }),
-            Instructions.make({
               key: Instructions.Key.make("core/environment"),
               codec: Schema.toCodecJson(Schema.String),
               read: Effect.sync(() =>
                 [
-                  "<env>",
-                  `  Working directory: ${location.directory}`,
-                  `  Workspace root folder: ${location.project.directory}`,
-                  `  Is directory a git repo: ${location.vcs?.type === "git" ? "yes" : "no"}`,
-                  `  Platform: ${process.platform}`,
-                  `  Prefer ${global.tmp} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
-                  "</env>",
+                  `<env>${[
+                    `Working directory: ${location.directory}`,
+                    ...(location.directory === location.project.directory
+                      ? []
+                      : [`Workspace root folder: ${location.project.directory}`]),
+                    `OS: ${process.platform}`,
+                  ].join("; ")}</env>`,
+                  "",
+                  `Use \`${temporary}\` for temporary work outside the workspace. It already exists and is pre-approved for external-directory access.`,
                 ].join("\n"),
               ),
               render: {
-                initial: (environment) =>
-                  ["Here is some useful information about the environment you are running in:", environment].join("\n"),
+                initial: (environment) => environment,
                 changed: (_previous, environment) =>
                   ["The environment you are running in is now:", environment].join("\n"),
               },
@@ -57,4 +56,4 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = makeLocationNode({ service: Service, layer, deps: [Global.node, Location.node] })
+export const node = makeLocationNode({ service: Service, layer, deps: [Global.node, Location.node, FSUtil.node] })
