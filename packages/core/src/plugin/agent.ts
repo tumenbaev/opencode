@@ -16,6 +16,7 @@ Guidelines:
 
 Complete the user's search request efficiently and report your findings clearly.`
 
+// @ts-expect-error Retain the unused upstream prompt to minimize merge conflicts.
 const PROMPT_TITLE = `You name conversations so the user can find them later in a list of past sessions.
 
 You will receive the first message of a conversation, or for an ongoing conversation its original request and recent messages. Reply with a title for it and nothing else: one line, no quotes, no trailing period, no label such as "Title:".
@@ -103,7 +104,7 @@ export const Plugin = define({
         item.name = Agent.Name.make("Title")
         item.mode = "primary"
         item.hidden = true
-        item.system = PROMPT_TITLE
+        item.system = `Generate a brief 2-5 word title that describes user input. Output ONLY a title.`
         item.permissions.push({ action: "*", resource: "*", effect: "deny" })
       })
 

@@ -149,7 +149,7 @@ const expected = {
   // tool's ShellSelect.gitbash() looks up git once to find Git Bash (cached per process), so one lookup is allowed.
   "boot + turn: git lookups beyond one": 0,
   "boot + turn: git spawns not using the resolved executable": 0,
-  // One step resolves the prompt hook model once, shared by the context, compaction and generate hooks.
+  // The step's model is already resolved; warming reads the catalog once for model-level settings.
   "turn: catalog lookups per step": 1,
   // Azure is enabled without a resource name, so its model transform has nothing to rewrite.
   "model rebuild: Azure model edits": 0,
