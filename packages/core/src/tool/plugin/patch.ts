@@ -19,9 +19,7 @@ import { fileDiff } from "./file-diff.js"
 export const name = "patch"
 
 export const Input = Schema.Struct({
-  patchText: Schema.String.annotate({
-    description: "The full patch text describing add, update, and delete operations",
-  }),
+  patchText: Schema.String,
 })
 
 export const Applied = Schema.Struct({
@@ -295,8 +293,9 @@ export const Plugin = {
 
     const hook = (event: SessionHooks["context"]) =>
       Effect.sync(() => {
-        const usePatch =
-          event.model.id.includes("gpt-") && !event.model.id.includes("oss") && !event.model.id.includes("gpt-4")
+        const usePatch = true
+        // const usePatch =
+        //   event.model.id.includes("gpt-") && !event.model.id.includes("oss") && !event.model.id.includes("gpt-4")
         if (usePatch) {
           delete event.tools.edit
           delete event.tools.write

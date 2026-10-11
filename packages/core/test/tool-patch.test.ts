@@ -167,7 +167,8 @@ const withTempTool = <A, E, R>(body: (directory: string, registry: Tool.Interfac
   )
 
 describe("PatchTool", () => {
-  it.live("selects the same edit tools for compaction and generate requests as the agent loop", () =>
+  // Fork requests select patch regardless of model.
+  it.live.skip("selects the same edit tools for compaction and generate requests as the agent loop", () =>
     withTempTool(() =>
       Effect.gen(function* () {
         const event = (id: string): SessionHooks["context"] => ({
@@ -190,6 +191,38 @@ describe("PatchTool", () => {
           const gpt = event("gpt-5")
           yield* hook!(gpt)
           expect(Object.keys(gpt.tools)).toEqual(["patch", "read"])
+        }
+      }),
+    ),
+  )
+
+  it.live("selects patch for all models and request hooks without restoring filtered tools", () =>
+    withTempTool(() =>
+      Effect.gen(function* () {
+        const event = (id: string): SessionHooks["context"] => ({
+          sessionID,
+          agent: toolIdentity.agent,
+          model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make(id) }),
+          system: [],
+          messages: [],
+          tools: Object.fromEntries(
+            ["patch", "edit", "write", "read"].map((name) => [name, { description: name, input: { type: "object" } }]),
+          ),
+          options: {},
+        })
+        for (const name of ["context", "compaction", "generate"]) {
+          const hook = sessionHooks.get(name)
+          expect(hook).toBeDefined()
+          const claude = event("claude-sonnet-4")
+          yield* hook!(claude)
+          expect(Object.keys(claude.tools)).toEqual(["patch", "read"])
+          const gpt = event("gpt-5")
+          yield* hook!(gpt)
+          expect(Object.keys(gpt.tools)).toEqual(["patch", "read"])
+          const filtered = event("claude-sonnet-4")
+          delete filtered.tools.patch
+          yield* hook!(filtered)
+          expect(Object.keys(filtered.tools)).toEqual(["read"])
         }
       }),
     ),
@@ -280,6 +313,23 @@ describe("PatchTool", () => {
         )
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("applies numeric hunk headers by content despite incorrect positions", () =>
+    withTempTool((directory, registry) =>
+      Effect.gen(function* () {
+        const target = path.join(directory, "numeric.txt")
+        yield* Effect.promise(() => fs.writeFile(target, "before\nold\nafter\n"))
+        const settled = yield* executeTool(
+          registry,
+          call(
+            "*** Begin Patch\n*** Update File: numeric.txt\n@@ -900,3 +800 @@ unrelated label\n before\n-old\n+new\n after\n*** End Patch",
+          ),
+        )
+        expect(settled.status).toBe("completed")
+        expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("before\nnew\nafter\n")
+      }),
     ),
   )
 
@@ -474,6 +524,43 @@ describe("PatchTool", () => {
         })
         expect(yield* exists(source)).toBe(false)
         expect(yield* Effect.promise(() => fs.readFile(destination, "utf8"))).toBe("same\n")
+      }),
+    ),
+  )
+
+  it.live("moves files without content hunks, including an empty file", () =>
+    withTempTool((directory, registry) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() =>
+          Promise.all([
+            fs.writeFile(path.join(directory, "old.txt"), "same\n"),
+            fs.writeFile(path.join(directory, "empty.txt"), ""),
+          ]),
+        )
+        expect(
+          yield* executeTool(
+            registry,
+            call(
+              "*** Begin Patch\n*** Update File: old.txt\n*** Move to: moved.txt\n*** Update File: empty.txt\n*** Move to: moved-empty.txt\n*** End Patch",
+            ),
+          ),
+        ).toMatchObject({
+          status: "completed",
+          content: [{ type: "text", text: "Success. Updated the following files:\nM moved.txt\nM moved-empty.txt" }],
+          output: {
+            files: [
+              { file: "moved.txt", additions: 0, deletions: 0 },
+              { file: "moved-empty.txt", additions: 0, deletions: 0 },
+            ],
+          },
+        })
+        expect(yield* exists(path.join(directory, "old.txt"))).toBe(false)
+        expect(yield* exists(path.join(directory, "empty.txt"))).toBe(false)
+        expect(yield* Effect.promise(() => fs.readFile(path.join(directory, "moved.txt"), "utf8"))).toBe("same\n")
+        expect(yield* Effect.promise(() => fs.readFile(path.join(directory, "moved-empty.txt"), "utf8"))).toBe("")
+        expect(assertions).toMatchObject([
+          { action: "edit", resources: ["old.txt", "moved.txt", "empty.txt", "moved-empty.txt"] },
+        ])
       }),
     ),
   )

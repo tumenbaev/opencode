@@ -114,8 +114,17 @@ export function parse(patchText: string): Result.Result<ReadonlyArray<Hunk>, Par
         }
         next++
       }
-      const parsed = parseUpdate(lines, next, end, path, index)
+      const parsed = parseUpdate(lines, next, end)
       if ("error" in parsed) return Result.fail(parsed.error)
+      if (parsed.chunks.length === 0 && !movePath) {
+        return Result.fail(
+          new InvalidHunkError({
+            line: header,
+            lineNumber: index + 1,
+            reason: `Update file hunk for path '${path}' is empty`,
+          }),
+        )
+      }
       hunks.push({ type: "update", path, movePath, chunks: parsed.chunks })
       index = parsed.next
       continue
@@ -169,8 +178,6 @@ function parseUpdate(
   lines: ReadonlyArray<string>,
   start: number,
   end: number,
-  path: string,
-  hunk: number,
 ): { chunks: ReadonlyArray<UpdateFileChunk>; next: number } | { error: InvalidHunkError } {
   const chunks: Array<{
     oldLines: string[]
@@ -233,7 +240,10 @@ function parseUpdate(
       chunks.push({
         oldLines: [],
         newLines: [],
-        changeContext: updateLine === "@@" ? undefined : updateLine.slice("@@ ".length),
+        changeContext:
+          updateLine === "@@" || /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$/.test(updateLine)
+            ? undefined
+            : updateLine.slice("@@ ".length),
       })
       index++
       continue
@@ -273,17 +283,8 @@ function parseUpdate(
       }),
     }
   }
-  if (chunks.length === 0) {
-    return {
-      error: new InvalidHunkError({
-        line: lines[hunk]!.trim(),
-        lineNumber: hunk + 1,
-        reason: `Update file hunk for path '${path}' is empty`,
-      }),
-    }
-  }
-  const last = chunks.at(-1)!
-  if (last.oldLines.length === 0 && last.newLines.length === 0) {
+  const last = chunks.at(-1)
+  if (last && last.oldLines.length === 0 && last.newLines.length === 0) {
     const line = lines[index]!.trim()
     return {
       error: new InvalidHunkError({
