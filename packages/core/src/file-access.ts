@@ -63,9 +63,13 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/FileAccess") {}
 
-/** Expand a leading ~ and normalize Windows shell paths before lexical resolution. */
+/** Expand leading path aliases and normalize Windows shell paths before lexical resolution. */
 export const resolvePath = (directory: string, input: string, home = Global.Path.home) => {
-  const normalized = FSUtil.windowsPath(input)
+  let normalized = FSUtil.windowsPath(input)
+  const temporary = process.env.TMPDIR
+  if (process.platform === "darwin" && temporary) {
+    normalized = normalized.replace(/^\$(?:\{TMPDIR\}|TMPDIR)(?=\/|$)/, () => temporary)
+  }
   return path.resolve(
     directory,
     normalized === "~"

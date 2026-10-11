@@ -1031,6 +1031,29 @@ describe("ShellTool", () => {
     ),
   )
 
+  it.live("resolves macOS TMPDIR workdirs without overriding the shell environment", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "darwin") return
+      const temporary = process.env.TMPDIR
+      if (!temporary) throw new Error("Test harness must supply TMPDIR")
+      const tmp = yield* tmpdirScoped()
+      const suffix = path.relative(realpathSync(temporary), realpathSync(tmp.path))
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          for (const token of ["${TMPDIR}", "$TMPDIR"]) {
+            const settled = yield* executeTool(
+              registry,
+              call({ command: 'printf "%s\\n" "$TMPDIR"; pwd', workdir: `${token}/${suffix}` }),
+            )
+            expect(settled.status).toBe("completed")
+            expect(settled.content?.[0]).toEqual(Expected.text(`${temporary}\n${realpathSync(tmp.path)}\n`))
+          }
+        }),
+      )
+    }),
+  )
+
   it.live("reports a missing workdir", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

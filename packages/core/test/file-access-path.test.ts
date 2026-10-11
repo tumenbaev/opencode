@@ -244,6 +244,36 @@ describe("FileAccess.resolve", () => {
     )
   })
 
+  it.live("expands only a leading macOS TMPDIR token without changing authorization", () =>
+    withTempDir(({ path: directory }) =>
+      Effect.gen(function* () {
+        const access = yield* FileAccess.Service
+        for (const token of ["${TMPDIR}", "$TMPDIR"]) {
+          for (const suffix of ["", "/opencode/file.txt", "/opencode/../outside.txt"]) {
+            const input = token + suffix
+            const absolute = path.resolve(
+              directory,
+              process.platform === "darwin" ? `${process.env.TMPDIR}${suffix}` : input,
+            )
+            expect(FileAccess.resolvePath(directory, input)).toBe(absolute)
+            expect(yield* access.resolve({ path: input, kind: "file" })).toEqual(
+              yield* access.resolve({ path: absolute, kind: "file" }),
+            )
+          }
+        }
+        for (const literal of [
+          "notes/${TMPDIR}/file",
+          "notes/$TMPDIR/file",
+          "${TMPDIR}suffix/file",
+          "$TMPDIR_OTHER/file",
+          "$TMPDIRsuffix/file",
+        ]) {
+          expect(FileAccess.resolvePath(directory, literal)).toBe(path.resolve(directory, literal))
+        }
+      }).pipe(provide(directory)),
+    ),
+  )
+
   test.each([
     ["/c/Users/aiden/notes.md", "C:/Users/aiden/notes.md"],
     ["/C:/Users/aiden/notes.md", "C:/Users/aiden/notes.md"],
