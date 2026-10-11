@@ -15,9 +15,9 @@ import { Permission } from "../../permission.js"
 export const name = "glob"
 
 export const Input = Schema.Struct({
-  pattern: FileSystem.GlobInput.fields.pattern.annotate({ description: "Glob pattern to match files against" }),
+  pattern: FileSystem.GlobInput.fields.pattern.annotate({ description: "The glob pattern to match files against" }),
   path: Schema.optionalKey(RelativePath).annotate({
-    description: "Directory to search. Defaults to the current working directory.",
+    description: `The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.`,
   }),
   hidden: FileSystem.GlobInput.fields.hidden.annotate({
     description: "Include hidden files and directories (default: false).",
@@ -56,7 +56,7 @@ export const Plugin = {
         editor.add({
           name,
           options: { codemode: false },
-          description: 'Search file paths using a glob pattern (examples: "**/*.ts", "src/**/*.tsx").',
+          description: "Returns matching file paths.",
           input: Input,
           output: Output,
           execute: (input, context) =>

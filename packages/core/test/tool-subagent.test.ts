@@ -669,7 +669,8 @@ describe("SubagentTool", () => {
     ),
   )
 
-  it.live("runs the child on an explicitly requested model", () =>
+  // Fork subagents use the agent's model rather than per-call overrides.
+  it.live.skip("runs the child on an explicitly requested model", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
@@ -721,6 +722,48 @@ describe("SubagentTool", () => {
               error: { type: "tool.execution", message },
             })
           }
+        }),
+      ),
+    ),
+  )
+
+  it.live("omits model from the tool schema and ignores per-call model overrides", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({ location, model: parentModel })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const call = (id: string, input: Record<string, unknown>) =>
+            executeTool(registry, {
+              sessionID: parent.id,
+              ...toolIdentity,
+              call: {
+                type: "tool-call" as const,
+                id,
+                name: SubagentTool.name,
+                input: { agent: "reviewer", description: "review", prompt: "review this", ...input },
+              },
+            })
+
+          const definition = (yield* registry.snapshot()).definitions.find((tool) => tool.name === SubagentTool.name)
+          expect(definition?.inputSchema.properties).not.toHaveProperty("model")
+          expect(definition?.inputSchema.properties).toHaveProperty("sessionID")
+
+          const spawned = yield* call("call-override", { model: "test/override#fast", sessionID: "" })
+          expect(spawned).toMatchObject({ status: "completed", metadata: { status: "completed" } })
+          const child = yield* sessions.get(outputSessionID(spawned.metadata))
+          expect(child).toMatchObject({ agent: "reviewer", model: childModel })
+
+          const continued = yield* call("call-override-continue", { sessionID: child.id, model: "test/override" })
+          expect(continued).toMatchObject({ status: "completed", metadata: { sessionID: child.id } })
+          expect((yield* sessions.get(child.id)).model).toEqual(child.model)
         }),
       ),
     ),

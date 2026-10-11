@@ -15,12 +15,13 @@ import { Environment } from "../../environment/index.js"
 export const name = "read"
 const FILENAME = "AGENTS.md"
 const LocationInput = Schema.Struct({
-  path: Schema.String.annotate({ description: "File or directory to read" }),
+  path: Schema.String.annotate({ description: "The path to the file or directory to read" }),
   offset: ReadToolFileSystem.PageInput.fields.offset.annotate({
-    description: "The line or directory entry to start reading from (1-based)",
+    description: "The line number or directory entry to start reading from (1-indexed)",
   }),
   limit: ReadToolFileSystem.PageInput.fields.limit.annotate({
-    description: "The maximum number of lines or directory entries to read (defaults to and capped at 2000)",
+    description:
+      "The maximum number of lines or directory entries to read (capped at 2000; defaults to 2000 for paged reads)",
   }),
 })
 export const Input = LocationInput
@@ -41,7 +42,7 @@ export const Plugin = {
           name,
           options: { codemode: false },
           description:
-            "Read the contents of a file or directory. Supports text files, images, and PDFs. Images and PDFs are presented directly to the model. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files.",
+            "Read a file from the filesystem.\n\nAssumes any user-provided path is valid. Returns an error if file doesn't exist. Supports images and PDFs. Cannot read binary files. Lines longer than 2000 characters are truncated.\n\nSpeculatively read multiple files as a batch when potentially useful.",
           input: Input,
           output: Output,
           execute: (input, context) => {

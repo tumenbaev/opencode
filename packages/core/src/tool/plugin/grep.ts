@@ -18,13 +18,13 @@ export const Input = Schema.Struct({
   pattern: FileSystem.GrepInput.fields.pattern
     .check(Schema.isMinLength(1, { message: "Pattern must not be empty" }))
     .annotate({
-      description: "Regular expression or literal text to match in file contents.",
+      description: "The regex pattern or literal text to search for in file contents",
     }),
   path: Schema.optionalKey(RelativePath).annotate({
-    description: "File or directory to search. Defaults to the current working directory.",
+    description: "The file or directory to search in. Defaults to the current working directory.",
   }),
   include: FileSystem.GrepInput.fields.include.annotate({
-    description: 'Glob pattern to filter files (for example, "*.js" or "*.{ts,tsx}")',
+    description: 'File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")',
   }),
   literal: FileSystem.GrepInput.fields.literal.annotate({
     description: "Treat `pattern` as exact text instead of a regular expression (default: false).",
@@ -76,7 +76,7 @@ export const Plugin = {
           name,
           options: { codemode: false },
           description:
-            "Search file contents using ripgrep's regular expression syntax or literal text matching. Use it to locate specific code, symbols, or text patterns, and narrow searches with `path` or `include`. Returns matching file paths, line numbers, and line previews.",
+            "Content search that supports ripgrep regular-expression syntax.\nReturns file paths and line numbers with matches.",
           input: Input,
           output: Output,
           execute: (input, context) =>

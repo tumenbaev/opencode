@@ -15,19 +15,17 @@ export const MAX_RESPONSE_BYTES = MAX_MARKDOWN_BYTES
 export const DEFAULT_TIMEOUT_SECONDS = 30
 export const MAX_TIMEOUT_SECONDS = 120
 
-export const description = `Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.
-
-Use a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.`
+export const description = "Fetches web content for analysis. Enforces a 5MB limit. Prefer specialized tools if available."
 
 const Timeout = Schema.Finite.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(MAX_TIMEOUT_SECONDS))
 
 export const Input = Schema.Struct({
-  url: Schema.String.annotate({ description: "The HTTP or HTTPS URL to fetch content from" }),
+  url: Schema.String.annotate({ description: "The URL to fetch content from" }),
   format: Schema.Literals(["text", "markdown", "html"])
-    .annotate({ description: "The format to return the content in. Defaults to markdown." })
+    .annotate({ description: "The format to return the content in (text, markdown, or html). Defaults to markdown." })
     .pipe(Schema.withDecodingDefaultKey(Effect.succeed("markdown" as const))),
   timeout: Schema.optionalKey(Timeout).annotate({
-    description: `Optional timeout in seconds (maximum: ${MAX_TIMEOUT_SECONDS})`,
+    description: `Optional timeout in seconds (max ${MAX_TIMEOUT_SECONDS})`,
   }),
 })
 

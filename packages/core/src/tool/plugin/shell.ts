@@ -33,6 +33,7 @@ const OS =
       : process.platform === "linux"
         ? "Linux"
         : process.platform
+// @ts-expect-error Retain the unused upstream helper; descriptions are overridden at the callsites.
 const description = (shell?: string) =>
   [
     "Execute a shell command and return its output.",
@@ -56,7 +57,7 @@ export const Input = Schema.Struct({
   }),
   background: Schema.optionalKey(Schema.Boolean).annotate({
     description:
-      "Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.",
+      "Run the command in the background and return immediately. You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.",
   }),
 })
 
@@ -193,7 +194,7 @@ export const Plugin = {
         editor.add({
           name,
           options: { codemode: false },
-          description: description(),
+          description: "",
           input: Input,
           output: Output,
           execute: (input, context) =>
@@ -284,7 +285,8 @@ export const Plugin = {
       Effect.gen(function* () {
         const tool = event.tools[name]
         if (!tool) return
-        tool.description = description(ShellSelect.name(yield* compatibleShell))
+        const selected = ShellSelect.name(yield* compatibleShell)
+        tool.description = selected ? `Uses ${selected}` : ""
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)

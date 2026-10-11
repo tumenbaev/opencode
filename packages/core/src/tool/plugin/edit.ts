@@ -23,13 +23,12 @@ export const name = "edit"
 
 export const Input = Schema.Struct({
   path: Schema.String.annotate({
-    description: "File to edit",
+    description: "The path to the file to modify",
   }),
-  oldString: Schema.String.annotate({ description: "Exact text to find and replace" }),
-  newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
+  oldString: Schema.String.annotate({ description: "The text to replace" }),
+  newString: Schema.String.annotate({ description: "The text to replace it with (must be different from oldString)" }),
   replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
-    description:
-      "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
+    description: "Replace all occurrences of oldString (default false)",
   }),
 })
 
@@ -220,7 +219,7 @@ export const Plugin = {
           name,
           options: { codemode: false, permission: "edit" },
           description:
-            "Edit the contents of a file by finding and replacing exact text. When editing text from Read output, preserve the exact indentation (tabs or spaces) and omit the line-number prefix, such as `1: `. Never include the prefix in oldString or newString. Write line breaks as \\n; the file's existing CRLF or LF line endings are matched and preserved. To change line endings themselves, make oldString and newString differ only in \\r; that edit applies to the exact bytes. If there is no exact match, the edit retries while ignoring typographic quote, dash, and space variants, then trailing whitespace on each line. The edit fails if oldString is not found. By default, oldString must identify a UNIQUE location. Multiple matches FAIL unless replaceAll is true. Add more surrounding context to disambiguate, or set replaceAll to true to replace every occurrence. Use replaceAll when the change should apply to every occurrence, such as renaming a variable.",
+            "Replace `oldString` with `newString` in a file.\n\n- Always Read the file before editing. Omit Read's line-number prefixes.\n- `oldString` must match exactly once. If multiple matches exist, add more surrounding context or set `replaceAll` to true.\n- Preserve whitespace and indentation. Write line breaks as \\n; existing CRLF or LF endings are preserved. To change line endings, make the strings differ only in \\r.\n- If exact matching fails, typographic quote, dash, and space variants, then trailing whitespace are ignored.\n- Prefer editing existing files over creating new ones.",
           input: Input,
           output: Output,
           execute: (input, context) => {
