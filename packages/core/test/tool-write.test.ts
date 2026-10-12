@@ -121,6 +121,7 @@ describe("WriteTool", () => {
           expect(yield* toolDefinitions(registry)).toMatchObject([
             { name: "write", outputSchema: { type: "string" } },
             { name: "execute" },
+            { name: "describe" },
           ])
           const settled = yield* executeTool(registry, call({ path: "src/new.txt", content: "created" }))
           expect(settled).toEqual({

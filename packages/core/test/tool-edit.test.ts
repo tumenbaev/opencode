@@ -140,12 +140,13 @@ describe("EditTool", () => {
               expect(yield* toolDefinitions(registry)).toMatchObject([
                 { name: "edit", outputSchema: { type: "string" } },
                 { name: "execute" },
+                { name: "describe" },
               ])
               expect(
                 (yield* toolDefinitions(registry, [{ action: "edit", resource: "*", effect: "deny" }])).map(
                   (tool) => tool.name,
                 ),
-              ).toEqual(["execute"])
+              ).toEqual(["execute", "describe"])
               const settled = yield* executeTool(
                 registry,
                 call({ path: "hello.txt", oldString: "before", newString: "after" }),

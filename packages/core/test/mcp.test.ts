@@ -2581,6 +2581,7 @@ testEffect(Layer.empty).live("preserves plugin transforms through MCP catalog up
         "demo_search",
         "other_lookup",
         "execute",
+        "describe",
       ])
       const override = yield* registry.transform((editor) => {
         editor.add({
@@ -2607,6 +2608,7 @@ testEffect(Layer.empty).live("preserves plugin transforms through MCP catalog up
         "demo_search",
         "other_lookup",
         "execute",
+        "describe",
       ])
       expect((yield* toolDefinitions(registry)).find((tool) => tool.name === "demo_search")?.description).toBe(
         "Override search",
@@ -2645,6 +2647,7 @@ testEffect(Layer.empty).live("preserves plugin transforms through MCP catalog up
         "demo_status",
         "other_lookup",
         "execute",
+        "describe",
       ])
       expect((yield* toolDefinitions(registry)).find((tool) => tool.name === "demo_search")?.description).toBe(
         "Override search",
@@ -2670,6 +2673,7 @@ testEffect(Layer.empty).live("preserves plugin transforms through MCP catalog up
         "demo_refreshed",
         "demo_search",
         "execute",
+        "describe",
       ])
       expect((yield* toolDefinitions(registry)).find((tool) => tool.name === "demo_search")?.description).toBe(
         "Latest search",
@@ -2721,7 +2725,7 @@ testEffect(Layer.empty).effect("coalesces queued MCP tool notifications after in
     yield* registration.flush
     // Initial registration plus the flush's check that the registry is current.
     expect(reads).toBe(2)
-    expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["demo_read_1", "execute"])
+    expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["demo_read_1", "execute", "describe"])
 
     catalog = [tool("read_2")]
     yield* bus.publish(McpEvent.ToolsChanged, { server: "demo" })
@@ -2732,7 +2736,7 @@ testEffect(Layer.empty).effect("coalesces queued MCP tool notifications after in
     yield* advance(() => reads >= 4)
     yield* drain
     expect(reads).toBe(4)
-    expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["demo_read_3", "execute"])
+    expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["demo_read_3", "execute", "describe"])
   }).pipe(
     Effect.provide(
       AppNodeBuilder.build(LayerNode.group([Tool.node, McpTool.node, Bus.node]), [
@@ -2836,10 +2840,14 @@ it.effect("advertises MCP output schemas to Code Mode", () =>
       "direct_lookup",
       "direct_media",
       "execute",
+      "describe",
     ])
-    expect(codeModeListings(toolSet.codeModeCatalog!).find((tool) => tool.path === "demo.search")?.line).toContain(
-      "ok: boolean",
-    )
+    const described = yield* toolSet.execute({
+      sessionID: Session.ID.make("ses_mcp_describe"),
+      ...toolIdentity,
+      call: { type: "tool-call", id: "call_mcp_describe", name: "describe", input: { name: "demo.search" } },
+    })
+    expect(described.output.signature).toContain("ok: boolean")
     expect(execute?.description).not.toContain("tools.demo.search")
   }),
 )

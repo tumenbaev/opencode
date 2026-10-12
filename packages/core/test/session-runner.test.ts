@@ -124,7 +124,7 @@ const testLLM = Layer.unwrap(
             ...part,
             text: part.text.replace(emptyCodeMode, ""),
           })),
-          tools: request.tools.filter((tool) => tool.name !== "execute"),
+          tools: request.tools.filter((tool) => tool.name !== "execute" && tool.name !== "describe"),
         }
         requests.push(transformed)
         return transformed

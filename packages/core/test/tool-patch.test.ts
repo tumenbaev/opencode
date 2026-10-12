@@ -241,7 +241,7 @@ describe("PatchTool", () => {
           withTool(tmp.path, (registry) =>
             Effect.gen(function* () {
               const definitions = yield* toolDefinitions(registry)
-              expect(definitions.map((tool) => tool.name)).toEqual(["patch", "execute"])
+              expect(definitions.map((tool) => tool.name)).toEqual(["patch", "execute", "describe"])
               expect(definitions[0]?.outputSchema).toEqual({ type: "object", additionalProperties: false })
               expect(definitions[0]?.freeform).toEqual({
                 type: "lark",

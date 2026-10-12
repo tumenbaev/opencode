@@ -34,7 +34,8 @@ describe("CodeModeInstructions", () => {
       // The empty notice never explained Code Mode, so the first tools restate the whole catalog.
       const added = yield* readUpdate(CodeModeInstructions.make({ tools: [echo] }), initialized)
       expect(added.text).toContain("This catalog supersedes the previous Code Mode tool catalog.")
-      expect(added.text).toContain(echo.signature)
+      expect(added.text).toContain(`- ${echo.name}`)
+      expect(added.text).not.toContain(echo.signature)
 
       expect(yield* readUpdate(CodeModeInstructions.make({ tools: [] }), { values: added.values })).toMatchObject({
         text:
@@ -52,17 +53,20 @@ describe("CodeModeInstructions", () => {
       )
       expect(initialized.text).toContain("The catalog is complete.")
       expect(initialized.text).toContain("## Code Mode tools (call only inside `execute`)")
-      expect(initialized.text).toContain(`  - ${echo.signature} // Echo text`)
+      expect(initialized.text).toContain(`- ${echo.name}`)
+      expect(initialized.text).not.toContain(echo.signature)
 
       const added = yield* readUpdate(CodeModeInstructions.make({ tools: [echo, lookup] }), initialized)
-      expect(added.text).toBe(
-        `The Code Mode tool catalog has changed.\n\nNew tools are available:\n- orders (1 tool)\n  - ${lookup.signature} // Look up an order`,
-      )
+      expect(added.text).toContain("The Code Mode tool catalog has changed.")
+      expect(added.text).toContain("New tools are available in addition to those previously listed:")
+      expect(added.text).toContain(`- ${lookup.name}`)
+      expect(added.text).not.toContain("## Code Mode tools (call only inside `execute`)")
+      expect(added.text).not.toContain(lookup.signature)
 
       const removed = yield* readUpdate(CodeModeInstructions.make({ tools: [echo] }), { values: added.values })
       expect(removed.text).toBe(
         "The Code Mode tool catalog has changed.\n\n" +
-          "The following tool namespaces are no longer available and must not be used: `orders`.",
+          "The following tools are no longer available and must not be called: tools.orders.lookup.",
       )
 
       expect(yield* readUpdate(CodeModeInstructions.make(), initialized)).toMatchObject({
@@ -115,7 +119,9 @@ describe("CodeModeInstructions", () => {
         }),
       )
 
-      expect(initialized.text).toContain("- tools (2 tools) // Project utilities")
+      expect(initialized.text.split("## Code Mode tools (call only inside `execute`)\n\n")[1]).toBe(
+        "- tools.alpha\n- tools.zeta",
+      )
       expect(reordered.changed).toBe(false)
       expect(reordered.text).toBe("")
     }).pipe(Effect.provide(layer))

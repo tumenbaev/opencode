@@ -63,9 +63,10 @@ test("execute describes invariant Code Mode behavior", () => {
     [
       "Run JavaScript in a confined Code Mode runtime to script tool calls and HTTP requests and compose their results.",
       "Write plain JavaScript and send it exactly as written: no code fence, and no JSON or other wrapper around it.",
-      "`fetch` is available for HTTP requests. Imports, direct filesystem access, and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
-      "Inside `execute`, the only callable tools are those explicitly listed in the Code Mode catalog instructions or returned by the `search` function. Ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
-      'Call tools through `tools` using only exact paths and signatures from the catalog. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
+      "`fetch` is available for HTTP requests. Imports can only load exposed globals by Node module name, not arbitrary packages or files. Direct filesystem access and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
+      "Inside `execute`, the only callable tools are those explicitly listed in the Code Mode catalog instructions. Ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
+      "To obtain a tool’s full description and callable signature, call the native `describe` tool.",
+      'Call tools through `tools` using only exact paths and signatures returned by `describe`. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
       "Prefer an explicit `return`; if omitted, the final top-level expression becomes the result.",
       "Await every call whose completion matters; pending calls are interrupted when execution ends. Run independent calls concurrently with `Promise.allSettled`.",
     ].join("\n"),

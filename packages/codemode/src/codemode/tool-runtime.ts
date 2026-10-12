@@ -544,7 +544,7 @@ const resolve = <R>(
       closest
         ? `Unknown tool '${name}'. Did you mean ${toolExpression(closest.description.path)}?`
         : `Unknown tool '${name}'.`,
-      ["Use search to find available tools."],
+      ["Use an exact name from the available tool list."],
     )
   }
   if (node.tool === undefined) {
@@ -562,8 +562,8 @@ const resolve = <R>(
         : `Tool '${name}' is not callable, it is a namespace. Did you mean ${new Intl.ListFormat("en", { type: "disjunction" }).format(shown)}?`,
       [
         more > 0
-          ? `${more} more under '${name}'. Use search({ namespace: ${JSON.stringify(name)} }) to list them.`
-          : "Use search to find available tools.",
+          ? `${more} more under '${name}'. Use Object.keys(${toolExpression(name)}) to list their names.`
+          : "Use an exact name from the available tool list.",
       ],
     )
   }
@@ -637,7 +637,7 @@ export const globals = <R>(
         `Invalid input for tool '${name}': ${String(cause)}`,
         name === "search"
           ? ['Pass search a query string or an object, such as search("issues") or search({ namespace: "github" }).']
-          : ["The signature may have changed. Use search to get the current signature."],
+          : ["Check the tool’s callable signature before retrying."],
       )
     }
   }
