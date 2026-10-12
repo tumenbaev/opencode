@@ -470,35 +470,20 @@ describe("experimental_image_generate", () => {
     }),
   )
 
-  it.effect("lists image models through the models tool type filter", () =>
+  it.effect("filters image models from the model catalog", () =>
     Effect.gen(function* () {
       yield* imageModel("test", "painter")
       const catalog = yield* Provider.Service
       yield* catalog.transform((editor) =>
         editor.models.update(Provider.ID.make("test"), Model.ID.make("chat"), () => {}),
       )
-      const { session } = yield* setup()
-      const registry = yield* Tool.Service
-      const models = (input: Record<string, unknown>) =>
-        executeTool(registry, {
-          sessionID: session.id,
-          ...toolIdentity,
-          call: {
-            type: "tool-call",
-            id: `models-${JSON.stringify(input)}`,
-            name: "execute",
-            input: { code: `return await tools.opencode.models(${JSON.stringify(input)})` },
-          },
-        }).pipe(
-          Effect.map((result) =>
-            (JSON.parse(text(result) ?? "") as { providers: { models: { id: string }[] }[] }).providers.flatMap(
-              (provider) => provider.models.map((model) => model.id),
-            ),
-          ),
-        )
-      expect(yield* models({ type: "image" })).toEqual(["test/painter"])
-      expect(yield* models({})).not.toContain("test/painter")
-      expect(yield* models({})).toContain("test/chat")
+      yield* setup()
+      const models = yield* Model.Service
+      const images = (yield* models.available(["image"])).map((model) => `${model.providerID}/${model.id}`)
+      const chats = (yield* models.available(["chat"])).map((model) => `${model.providerID}/${model.id}`)
+      expect(images).toEqual(["test/painter"])
+      expect(chats).not.toContain("test/painter")
+      expect(chats).toContain("test/chat")
     }),
   )
 })
