@@ -225,11 +225,11 @@ it.live("runs due automations in standalone ServerProcess.start without lifecycl
       const session = await api.session.create({ location: { directory: dir } })
       const created = await api.experimental.automation.create({
         sessionID: session.id,
-        name: "models",
+        name: "worktrees",
         trigger: { type: "at", at: "in 150 millis" },
         action: {
           type: "code",
-          code: 'const models = await tools.opencode.models({}); console.log("models=" + models.total); return { state: { total: models.total } }',
+          code: 'const result = await tools.opencode.worktree_list({}); console.log("worktrees=" + result.worktrees.length); return { state: { total: result.worktrees.length } }',
         },
       })
       expect(created.status).toBe("active")
@@ -244,7 +244,7 @@ it.live("runs due automations in standalone ServerProcess.start without lifecycl
         status: "done",
         runCount: 1,
         lastOutcome: "fired",
-        lastOutput: expect.stringContaining("models="),
+        lastOutput: expect.stringContaining("worktrees="),
         state: { total: expect.any(Number) },
       })
     })
