@@ -188,6 +188,7 @@ const layer = Layer.effect(
           inventory: CodeModeTool.Inventory
           value: CodeModeCatalog.Inventory
           definition: ToolDefinition
+          describeDefinition?: ToolDefinition
         }
       | undefined
     const state = State.create<Data, Editor>({
@@ -266,9 +267,11 @@ const layer = Layer.effect(
           const names = Array.from(codeModeTools.keys()).join("\0")
           // Discovery is immutable for a registry revision and visible tool set. Keep executors
           // fresh, but share the inventory, whose prepared runtime and much larger rendered catalog
-          // are cached by identity, and the execute tool's definition across steps.
+          // are cached by identity, and the native Code Mode definitions across steps.
           const cached = catalog?.data === data && catalog.names === names ? catalog : undefined
           const codeModeInventory = cached?.inventory ?? { tools: codeModeTools, namespaces: data.namespaces }
+          const describeTool =
+            codeModeEnabled && !whollyDisabled("describe", rules) ? CodeModeTool.describe(codeModeInventory) : undefined
           const codeModeTool = codeModeEnabled
             ? CodeModeTool.create(
                 codeModeInventory,
@@ -280,6 +283,7 @@ const layer = Layer.effect(
             ? undefined
             : (cached?.value ?? CodeModeTool.catalog(codeModeInventory))
           const codeModeDefinition = codeModeTool && (cached?.definition ?? definition(codeModeTool))
+          const describeDefinition = describeTool && (cached?.describeDefinition ?? definition(describeTool))
           if (codeModeCatalog && codeModeDefinition)
             catalog = {
               data,
@@ -287,6 +291,7 @@ const layer = Layer.effect(
               inventory: codeModeInventory,
               value: codeModeCatalog,
               definition: codeModeDefinition,
+              ...(describeDefinition ? { describeDefinition } : {}),
             }
           return {
             ...(codeModeCatalog === undefined ? {} : { codeModeCatalog }),
@@ -295,6 +300,7 @@ const layer = Layer.effect(
                 .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
                 .map(([name]) => data.definitions.get(name)!),
               ...(codeModeDefinition ? [codeModeDefinition] : []),
+              ...(describeDefinition ? [describeDefinition] : []),
             ],
             execute: Effect.fnUntraced(function* (input: Parameters<Snapshot["execute"]>[0]) {
               const context: Tool.Context = {
@@ -307,11 +313,17 @@ const layer = Layer.effect(
               const event = yield* beforeExecute(input.call.name, input.call.input, context)
               const requested = input.definitions?.get(event.tool)
               // Preserve session context removal and alias resolution, now after the repair hook.
-              if (!requested && input.definitions && (direct.has(event.tool) || codeModeTool?.name === event.tool))
+              if (
+                !requested &&
+                input.definitions &&
+                (direct.has(event.tool) || codeModeTool?.name === event.tool || describeTool?.name === event.tool)
+              )
                 return yield* new Tool.Error({ message: `Tool is not available for this request: ${event.tool}` })
               const name = requested?.name ?? event.tool
               if (name === "execute" && codeModeTool)
                 return yield* executeTool(codeModeTool, name, event.input, context)
+              if (name === "describe" && describeTool)
+                return yield* executeTool(describeTool, name, event.input, context)
               const tool = direct.get(name)
               if (tool) return yield* executeTool(tool, name, event.input, context)
               return yield* new Tool.Error({
@@ -400,8 +412,8 @@ function register(tool: Tool.Info): Result.Result<ToolDefinition, RegistrationEr
   if (!/^[A-Za-z0-9_-]+$/.test(name))
     return Result.fail(new RegistrationError({ name, message: `Invalid tool name: ${name}` }))
   const id = effectiveName(tool)
-  if (tool.options?.codemode === false && id === "execute")
-    return Result.fail(new RegistrationError({ name: id, message: 'Tool name "execute" is reserved for CodeMode' }))
+  if (tool.options?.codemode === false && (id === "execute" || id === "describe"))
+    return Result.fail(new RegistrationError({ name: id, message: `Tool name "${id}" is reserved for CodeMode` }))
   // Standard Schema libraries such as ArkType make schemas that are functions.
   if (typeof tool.input !== "object" && typeof tool.input !== "function")
     return Result.fail(

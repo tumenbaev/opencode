@@ -75,12 +75,31 @@ export type Inventory = {
 // Invariant model-facing guidance; the changing tool catalog is delivered through Instructions.
 const description = [
   "Run JavaScript in a confined Code Mode runtime to script tool calls and HTTP requests and compose their results.",
-  "`fetch` is available for HTTP requests. Imports, direct filesystem access, and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
-  "Within `{ code }`, the only callable tools are those explicitly listed in the Code Mode catalog instructions or returned by the `search` function. Inside `{ code }`, ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
-  'Call tools through `tools` using only exact paths and signatures from the catalog. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
+  "`fetch` is available for HTTP requests. Imports can only load exposed globals by Node module name, not arbitrary packages or files. Direct filesystem access and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
+  "Within `{ code }`, the only callable tools are those explicitly listed in the Code Mode catalog instructions. Inside `{ code }`, ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
+  "To obtain a tool’s full description and callable signature, call the native `describe` tool.",
+  'Call tools through `tools` using only exact paths and signatures returned by `describe`. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
   "Prefer an explicit `return`; if omitted, the final top-level expression becomes the result.",
   "Await every call whose completion matters; pending calls are interrupted when execution ends. Run independent calls concurrently with `Promise.allSettled`.",
 ].join("\n")
+
+export const describe = (inventory: Inventory) => {
+  const tools = runtime(inventory).catalog
+  return {
+    name: "describe",
+    description: "Return a Code Mode tool’s full description and exact callable signature without executing it.",
+    input: Schema.Struct({
+      name: Schema.String.annotate({ description: "Exact canonical name from the Code Mode catalog." }),
+    }),
+    output: Schema.Struct({ description: Schema.String, signature: Schema.String }),
+    execute: ({ name }) =>
+      Effect.suspend(() => {
+        const tool = tools.find((tool) => tool.path === name)
+        if (!tool) return Effect.fail(new ToolFailure({ message: "Unknown or unavailable tool." }))
+        return Effect.succeed({ output: { description: tool.description, signature: tool.signature } })
+      }),
+  } satisfies Info
+}
 
 export const create = (
   inventory: Inventory,

@@ -106,7 +106,7 @@ describe("callable namespaces", () => {
     const diagnostic = await failure(runtime, `return await tools.issues.missing({})`)
     expect(diagnostic.kind).toBe("UnknownTool")
     expect(diagnostic.message).toContain("Unknown tool 'issues.missing'")
-    expect(diagnostic.suggestions).toEqual(["Use search to find available tools."])
+    expect(diagnostic.suggestions).toEqual(["Use an exact name from the available tool list."])
   })
 
   test("an unknown tool names the closest match", async () => {
@@ -134,10 +134,10 @@ describe("tool input diagnostics", () => {
     },
   })
 
-  test("a schema mismatch suggests searching for the current signature", async () => {
+  test("a schema mismatch suggests checking the callable signature", async () => {
     const diagnostic = await failure(runtime, `return await tools.notes.echo({ message: "hello" })`)
     expect(diagnostic.kind).toBe("InvalidToolInput")
-    expect(diagnostic.suggestions).toEqual(["The signature may have changed. Use search to get the current signature."])
+    expect(diagnostic.suggestions).toEqual(["Check the tool’s callable signature before retrying."])
   })
 
   test("a wrong argument count keeps the existing error without a stale-signature hint", async () => {
