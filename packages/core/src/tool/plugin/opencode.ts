@@ -281,6 +281,8 @@ export const Plugin = {
               }
             }).pipe(Effect.mapError((error) => new ToolFailure({ message: "Unable to list models", error }))),
         })
+        for (const name of ["session_rename", "models", "worktree_create", "worktree_remove"])
+          draft.remove(`opencode_${name}`)
       })
       .pipe(Effect.orDie)
   }),

@@ -2,6 +2,8 @@ import { expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { Database } from "@opencode/core/database/database"
+import { CodeModeInstructions } from "@opencode/core/codemode/instructions"
+import { CodeModeCatalog } from "@opencode/core/codemode/catalog"
 import { Location } from "@opencode/core/location"
 import { Permission } from "@opencode/core/permission"
 import { Plugin } from "@opencode/core/plugin"
@@ -12,6 +14,7 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { Tool } from "@opencode/core/tool"
 import { OpenCodeTools } from "@opencode/core/tool/plugin/opencode"
+import { McpResourceTools } from "@opencode/core/tool/plugin/mcp-resource"
 import { WorktreeTable } from "@opencode/core/worktree/sql"
 import { WorktreeStrategies } from "@opencode/core/worktree/strategies"
 import { Model } from "@opencode/schema/model"
@@ -20,7 +23,7 @@ import { initRepo } from "./fixture/git"
 import { tmpdirScoped } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
-import { executeTool, toolIdentity } from "./lib/tool"
+import { codeModeListings, executeTool, toolIdentity } from "./lib/tool"
 import { makePluginTestLayer, PluginTestLayer } from "./plugin/fixture"
 
 const it = testEffect(PluginTestLayer)
@@ -37,7 +40,8 @@ const gammaOld = {
   status: "active",
 }
 
-it.effect("groups available models by provider with paging", () =>
+// These upstream tests exercise tools intentionally removed from agent access.
+it.effect.skip("groups available models by provider with paging", () =>
   Effect.gen(function* () {
     const catalog = yield* Provider.Service
     const plugins = yield* Plugin.Service
@@ -162,7 +166,65 @@ const worktreeIt = testEffect(
   ),
 )
 
-worktreeIt.live("creates, lists, and removes worktrees for the plugin's project", () =>
+worktreeIt.effect("hides removed tools from registration, discovery, describe, and execution", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const host = yield* PluginHost.make(plugins)
+    yield* OpenCodeTools.Plugin.effect(host)
+    yield* McpResourceTools.Plugin.effect(host)
+    const registry = yield* Tool.Service
+    const snapshot = yield* registry.snapshot()
+    const ids = (yield* registry.list()).map((tool) => tool.id)
+    const catalog = snapshot.codeModeCatalog
+    if (!catalog) throw new Error("Missing Code Mode catalog")
+    const names = codeModeListings(catalog).map((entry) => entry.path)
+    const text = CodeModeInstructions.render(CodeModeCatalog.summarize(catalog))
+    const run = (name: string, input: unknown) =>
+      snapshot.execute({
+        sessionID: Session.ID.make("ses_removed_tools"),
+        ...toolIdentity,
+        call: { type: "tool-call", id: "removed-tools", name, input },
+      })
+    approvals.assertions.length = 0
+    for (const name of ["session_rename", "models", "worktree_create", "worktree_remove"]) {
+      expect(ids).not.toContain(`opencode_${name}`)
+      expect(names).not.toContain(`opencode.${name}`)
+      expect(text).not.toContain(`opencode.${name}`)
+      expect((yield* run("describe", { name: `opencode.${name}` }).pipe(Effect.flip)).message).toBe(
+        "Unknown or unavailable tool.",
+      )
+      expect((yield* run(`opencode_${name}`, {}).pipe(Effect.flip)).message).toContain("No tool named")
+      expect((yield* run("execute", { code: `return await tools.opencode.${name}({})` })).output).toMatchObject({
+        error: true,
+        toolCalls: [],
+      })
+      expect(
+        (yield* run("execute", {
+          code: `return search({ query: "" }).items.some(item => item.path === "tools.opencode.${name}")`,
+        })).output,
+      ).toMatchObject({ output: "false" })
+    }
+    for (const name of ["session_move", "worktree_list", "list_mcp_resources", "read_mcp_resource"]) {
+      expect(ids).toContain(`opencode_${name}`)
+      expect(names).toContain(`opencode.${name}`)
+      expect(text).toContain(`- opencode.${name}`)
+      expect((yield* run("describe", { name: `opencode.${name}` })).output).toMatchObject({
+        signature: expect.stringContaining(`tools.opencode.${name}(`),
+      })
+    }
+    expect(text.split("## Available tools\n\n")[1]).toBe(
+      [
+        "- opencode.list_mcp_resources",
+        "- opencode.read_mcp_resource",
+        "- opencode.session_move",
+        "- opencode.worktree_list",
+      ].join("\n"),
+    )
+    expect(approvals.assertions).toEqual([])
+  }),
+)
+
+worktreeIt.live.skip("creates, lists, and removes worktrees for the plugin's project", () =>
   Effect.gen(function* () {
     const plugins = yield* Plugin.Service
     const sessions = yield* Session.Service

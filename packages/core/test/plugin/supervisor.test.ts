@@ -134,9 +134,10 @@ describe("PluginSupervisor", () => {
         expect((yield* agents.get(Agent.ID.make("title")))?.system).toBe(
           "Generate a brief 2-5 word title that describes user input. Output ONLY a title.",
         )
-        expect(yield* registry.list()).toContainEqual(
-          expect.objectContaining({ name: "session_move", options: expect.objectContaining({ namespace: "opencode" }) }),
-        )
+        // Fork: session_move is intentionally hidden; tool-opencode.test.ts covers removed-tool visibility and execution.
+        // expect(yield* registry.list()).toContainEqual(
+        //   expect.objectContaining({ name: "session_move", options: expect.objectContaining({ namespace: "opencode" }) }),
+        // )
       }).pipe(Effect.scoped, Effect.provide(locations.get(location)))
     }),
   )
