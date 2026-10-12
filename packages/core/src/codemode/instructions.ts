@@ -1,18 +1,18 @@
 export * as CodeModeInstructions from "./instructions.js"
 
-import { searchSignature, toolExpression } from "@opencode/codemode"
+import { toolExpression } from "@opencode/codemode"
 import { Effect, Schema } from "effect"
 import { Instructions } from "../instructions/index.js"
 import { CodeModeCatalog } from "./catalog.js"
 
 // prettier-ignore
-const prompt = (hasMoreTools: boolean) => `# Code Mode
+const prompt = () => `# Code Mode
 
-Use the \`execute\` tool to call the tools listed below. They cannot be called directly${hasMoreTools ? ", and neither can \`search\`. Both" : ". They"} only work inside code you pass to \`execute\`.
+Use the \`execute\` tool to call the tools listed below. They cannot be called directly. They only work inside code you pass to \`execute\`.
 
-${hasMoreTools ? `The catalog is partial. Inside \`execute\`, use \`search(...)\` to find a tool, then call it by the \`path\` in the result. \`search\` is synchronous. Call it without \`await\`; it does not return a Promise. Do not guess tool names.
+To obtain a tool’s full description and callable signature, call the native \`describe\` tool.
 
-- ${searchSignature}` : "The catalog is complete. Do not guess tool names."}
+The catalog is complete. Do not guess tool names.
 
 ## Available tools`
 
@@ -20,11 +20,12 @@ export function render(catalog: CodeModeCatalog.Summary) {
   if (catalog.total === 0)
     return "No Code Mode tools are currently available. Later Code Mode catalog updates may add or remove tools. Do not call `execute` unless there is at least one available Code Mode tool."
 
-  const tools = catalog.namespaces.flatMap((namespace) => {
-    return [CodeModeCatalog.namespaceLine(namespace), ...namespace.entries.map((entry) => entry.line)]
-  })
+  const tools = catalog.namespaces
+    .flatMap((namespace) => namespace.entries.map((entry) => entry.path))
+    .sort()
+    .map((path) => `- ${path}`)
 
-  return `${prompt(catalog.shown < catalog.total)}
+  return `${prompt()}
 
 ${tools.join("\n")}`
 }
@@ -76,7 +77,7 @@ ${render(current)}`
     }
     if (namespaces.changed.length > 0) {
       parts.push(
-        `The following namespace inventories changed; search them again before relying on previous results: ${namespaces.changed
+        `The following namespace inventories changed: ${namespaces.changed
           .map((change) => `\`${change.current.name}\` now has ${change.current.count} tools`)
           .join(", ")}.`,
       )
@@ -99,7 +100,7 @@ ${render(current)}`
     parts.push(
       [
         "New tools are available in addition to those previously listed:",
-        ...diff.added.map((entry) => entry.line),
+        ...diff.added.map((entry) => `- ${entry.path}`).sort(),
       ].join("\n"),
     )
   }
@@ -107,7 +108,7 @@ ${render(current)}`
     parts.push(
       [
         "Changed tool listings supersede the previously listed ones:",
-        ...diff.changed.map((change) => change.current.line),
+        ...diff.changed.map((change) => `- ${change.current.path}`).sort(),
       ].join("\n"),
     )
   }

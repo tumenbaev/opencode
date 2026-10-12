@@ -33,7 +33,7 @@ describe("CodeModeInstructions", () => {
 
       const added = yield* readUpdate(CodeModeInstructions.make({ tools: [echo] }), initialized)
       expect(added.text).toContain("New tools are available in addition to those previously listed:")
-      expect(added.text).toContain(echo.signature)
+      expect(added.text).toContain(`- ${echo.name}`)
 
       expect(yield* readUpdate(CodeModeInstructions.make({ tools: [] }), { values: added.values })).toMatchObject({
         text:
@@ -49,12 +49,12 @@ describe("CodeModeInstructions", () => {
       expect(initialized.text).toContain("Use the `execute` tool to call the tools listed below.")
       expect(initialized.text).toContain("The catalog is complete.")
       expect(initialized.text).toContain("## Available tools")
-      expect(initialized.text).toContain(`  - ${echo.signature} // Echo text`)
+      expect(initialized.text).toContain(`- ${echo.name}`)
 
       const added = yield* readUpdate(CodeModeInstructions.make({ tools: [echo, lookup] }), initialized)
       expect(added.text).toContain("The Code Mode tool catalog has changed.")
       expect(added.text).toContain("New tools are available in addition to those previously listed:")
-      expect(added.text).toContain(`  - ${lookup.signature} // Look up an order`)
+      expect(added.text).toContain(`- ${lookup.name}`)
       expect(added.text).not.toContain("## Available tools")
 
       const removed = yield* readUpdate(CodeModeInstructions.make({ tools: [echo] }), { values: added.values })
@@ -113,7 +113,9 @@ describe("CodeModeInstructions", () => {
         }),
       )
 
-      expect(initialized.text).toContain("- tools (2 tools) // Project utilities")
+      // Fork: the names-only catalog omits namespace headings and descriptions.
+      // expect(initialized.text).toContain("- tools (2 tools) // Project utilities")
+      expect(initialized.text.split("## Available tools\n\n")[1]).toBe("- tools.alpha\n- tools.zeta")
       expect(reordered.changed).toBe(false)
       expect(reordered.text).toBe("")
     }).pipe(Effect.provide(layer))

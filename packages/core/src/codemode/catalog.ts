@@ -52,6 +52,9 @@ const INLINE_BUDGET = 2_000
 // Keep every namespace visible, then select full listings one per namespace per round,
 // considering shorter listings first until the inline budget is exhausted.
 export function summarize(inventory: Inventory, options: Options = {}): Summary {
+  // Keep the upstream budget selection below, but expose every canonical name.
+  return names(inventory)
+
   const budget = options.budget ?? INLINE_BUDGET
   const flattened = flatten(inventory.tools)
   const namespaces = [...Map.groupBy(flattened.tools, (tool) => tool.path.split(".", 1)[0] ?? tool.path)]
@@ -137,6 +140,21 @@ export function summarize(inventory: Inventory, options: Options = {}): Summary 
     shown: namespaceSummaries.reduce((total, namespace) => total + namespace.entries.length, 0),
     namespaces: namespaceSummaries,
   }
+}
+
+function names(inventory: Inventory): Summary {
+  const tools = flatten(inventory.tools).tools
+  const namespaces = [...Map.groupBy(tools, (tool) => tool.path.split(".", 1)[0] ?? tool.path)]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([name, tools]) => ({
+      name,
+      count: tools.length,
+      entries: tools
+        .map((tool) => tool.path)
+        .sort()
+        .map((path) => ({ path, line: `- ${path}` })),
+    }))
+  return { total: tools.length, shown: tools.length, namespaces }
 }
 
 function flatten(entries: ReadonlyArray<Tool | Namespace>, path: ReadonlyArray<string> = []) {

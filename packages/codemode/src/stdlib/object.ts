@@ -37,7 +37,7 @@ export const enumerableSource = <R>(ctx: Interpreter<R>, label: string, value: V
   }
   if (value instanceof ToolReference) {
     throw invalidData(
-      `${label} cannot read tool references: they are not plain data. Use Object.keys(tools) for names, or search({ query }) for signatures.`,
+      `${label} cannot read tool references: they are not plain data. Use Object.keys(tools) for names.`,
       node,
     )
   }

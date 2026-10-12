@@ -108,7 +108,7 @@ describe("WriteTool", () => {
       const fixture = makeWriteFixture()
       return withTool(tmp.path, fixture, (registry) =>
         Effect.gen(function* () {
-          expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["write", "execute"])
+          expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["write", "execute", "describe"])
           const settled = yield* executeTool(registry, call({ path: "src/new.txt", content: "created" }))
           expect(settled).toEqual({
             status: "completed",

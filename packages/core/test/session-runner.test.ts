@@ -103,7 +103,7 @@ const testLLM = TestLLM.layer({
         ...part,
         text: part.text.replace(emptyCodeMode, ""),
       })),
-      tools: request.tools.filter((tool) => tool.name !== "execute"),
+      tools: request.tools.filter((tool) => tool.name !== "execute" && tool.name !== "describe"),
     }),
 })
 type ModelLimit = { readonly context: number; readonly input?: number; readonly output: number }

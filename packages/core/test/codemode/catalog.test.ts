@@ -29,7 +29,7 @@ const update = (
     CodeModeCatalog.summarize({ tools: current }, budget === undefined ? {} : { budget }),
   )
 
-describe("CodeModeCatalog.summarize", () => {
+describe.skip("upstream budgeted CodeModeCatalog.summarize (replaced by names-only)", () => {
   test("retains namespace inventory without retaining tools outside the inline budget", () => {
     const catalog = CodeModeCatalog.summarize(
       { tools: Array.from({ length: 10_000 }, (_, index) => entry(`bulk.tool${index}`, `Tool ${index}`)) },
@@ -115,17 +115,61 @@ describe("CodeModeCatalog.summarize", () => {
 })
 
 describe("CodeModeInstructions.render", () => {
+  test("lists all canonical names in order, including pinned tools, regardless of budget", () => {
+    const tools: CodeModeCatalog.Inventory["tools"] = [
+      entry("z.last", "Hidden tool description", undefined, true),
+      {
+        type: "namespace",
+        name: "a",
+        description: "Hidden namespace description",
+        tools: [entry("tool-name", "Hidden description", undefined, true), entry("first", "Hidden description")],
+      },
+      entry("middle", "Hidden description"),
+    ]
+    for (const budget of [0, 1, 2000]) {
+      const summary = CodeModeCatalog.summarize({ tools }, { budget })
+      expect(summary.shown).toBe(4)
+      const text = CodeModeInstructions.render(summary)
+      expect(text.split("## Available tools\n\n")[1]).toBe("- a.first\n- a.tool-name\n- middle\n- z.last")
+      expect(text).toContain(
+        "To obtain a tool’s full description and callable signature, call the native `describe` tool.",
+      )
+      expect(text).not.toContain("Hidden")
+      expect(text).not.toContain("Promise")
+      expect(text).not.toContain("search")
+    }
+  })
+
+  test("renders old persisted summary entries as names only", () => {
+    const old = {
+      total: 1,
+      shown: 1,
+      namespaces: [
+        {
+          name: "orders",
+          description: "Old description",
+          count: 1,
+          entries: [{ path: "orders.lookup", line: lookup.signature }],
+        },
+      ],
+    }
+    expect(CodeModeInstructions.render(old).split("## Available tools\n\n")[1]).toBe("- orders.lookup")
+    expect(CodeModeInstructions.update(old, CodeModeCatalog.summarize({ tools: [lookup] }))).not.toContain(
+      lookup.signature,
+    )
+  })
+
   test("inlines complete catalogs without search guidance", () => {
     const instructions = render([lookup])
     expect(instructions).toContain("## Available tools")
-    expect(instructions).toContain("- orders (1 tool)")
-    expect(instructions).toContain(`  - ${lookup.signature} // Look up an order by ID`)
+    expect(instructions).toContain("- orders.lookup")
+    expect(instructions).not.toContain(lookup.signature)
     expect(instructions).not.toContain("search")
     expect(instructions).toContain("They cannot be called directly. They only work inside code you pass to `execute`.")
     expect(instructions).toContain("The catalog is complete. Do not guess tool names.")
   })
 
-  test("adds search guidance when the catalog exceeds the budget", () => {
+  test.skip("adds search guidance when the catalog exceeds the budget", () => {
     const partial = render([lookup], 0)
     expect(partial).toContain("## Available tools")
     expect(partial).toContain("- orders (1 tool, none shown)")
@@ -139,7 +183,7 @@ describe("CodeModeInstructions.render", () => {
     expect(partial).not.toContain("tools.orders.lookup(input:")
   })
 
-  test("budgets signatures round-robin so every namespace remains visible", () => {
+  test.skip("budgets signatures round-robin so every namespace remains visible", () => {
     const cheapAlpha = entry("alpha.cheap", "Cheap")
     const cheapBeta = entry("beta.cheap", "Cheap")
     const expensive = entry(
@@ -162,7 +206,7 @@ describe("CodeModeInstructions.render", () => {
     expect(instructions).toContain(`  - ${cheapBeta.signature} // Cheap`)
   })
 
-  test("charges inline JSDoc in signatures against the catalog token budget", () => {
+  test.skip("charges inline JSDoc in signatures against the catalog token budget", () => {
     const documented = entry(
       "records.lookup",
       "Look up a record",
@@ -189,10 +233,8 @@ describe("CodeModeInstructions.update", () => {
     const unchanged = Array.from({ length: 5 }, (_, index) => entry(`stable.tool${index}`, `Stable ${index}`))
     const text = update([echo, lookup, ...unchanged], [changed, added, ...unchanged])
     expect(text).toContain("The Code Mode tool catalog has changed.")
-    expect(text).toContain(`New tools are available in addition to those previously listed:\n  - ${added.signature}`)
-    expect(text).toContain(
-      `Changed tool listings supersede the previously listed ones:\n  - ${changed.signature} // Echo text`,
-    )
+    expect(text).toContain(`New tools are available in addition to those previously listed:\n- ${added.name}`)
+    expect(text).not.toContain(changed.signature)
     expect(text).toContain("The following tools are no longer available and must not be called: tools.orders.lookup.")
     expect(text).not.toContain("## Available tools")
   })
@@ -205,7 +247,7 @@ describe("CodeModeInstructions.update", () => {
     )
   })
 
-  test("restates namespace descriptions when they change", () => {
+  test.skip("restates namespace descriptions when they change", () => {
     const previous = CodeModeCatalog.summarize({
       tools: [{ type: "namespace", name: "notes", description: "Old description", tools: [echo] }],
     })
@@ -218,7 +260,7 @@ describe("CodeModeInstructions.update", () => {
     expect(text).not.toContain("Old description")
   })
 
-  test("restates the full catalog when the rendering mode crosses full and compact", () => {
+  test.skip("restates the full catalog when the rendering mode crosses full and compact", () => {
     const wide = Array.from({ length: 40 }, (_, index) => entry(`bulk.tool${index}`, `Tool ${index}`))
     const text = update([echo], [echo, ...wide], 30)
     expect(text).toContain(
@@ -237,7 +279,7 @@ describe("CodeModeInstructions.update", () => {
     expect(text).not.toContain("The following tools are no longer available")
   })
 
-  test("renders namespace-only deltas without persisting hidden tool entries", () => {
+  test.skip("renders namespace-only deltas without persisting hidden tool entries", () => {
     const alpha = Array.from({ length: 10 }, (_, index) => entry(`alpha.tool${index}`, `Tool ${index}`))
     const text = update(alpha, [...alpha, entry("alpha.tool10", "Tool 10")], 0)
     expect(text).toContain("`alpha` now has 11 tools")

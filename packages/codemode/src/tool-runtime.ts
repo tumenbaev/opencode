@@ -345,7 +345,7 @@ const resolve = <R>(root: ToolNode<R>, path: ReadonlyArray<string>, index: Reado
       closest
         ? `Unknown tool '${name}'. Did you mean ${toolExpression(closest.description.path)}?`
         : `Unknown tool '${name}'.`,
-      ["Use search to find available tools."],
+      ["Use an exact name from the available tool list."],
     )
   }
   if (node.tool === undefined) {
@@ -407,7 +407,7 @@ export const make = <R>(
           new ToolRuntimeError(
             "InvalidToolInput",
             `Invalid input for tool '${name}': ${String(cause)}`,
-            name === "search" ? [] : ["The signature may have changed. Use search to get the current signature."],
+            name === "search" ? [] : ["Check the tool’s callable signature before retrying."],
           ),
       })
       yield* Effect.sync(() => recordCall({ name }))
