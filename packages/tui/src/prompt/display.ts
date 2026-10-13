@@ -39,3 +39,21 @@ export function slashTriggerIndex(text: string, widthMethod: WidthMethod) {
     return measureEditText(text.slice(0, index), { widthMethod })
   }
 }
+
+export function inlineSlashToken(
+  value: string,
+  widthMethod: WidthMethod,
+  offset = measureEditText(value, { widthMethod }),
+) {
+  const cursor = promptOffsetIndex(value, offset, widthMethod)
+  const text = value.slice(0, cursor)
+  const match = /(?:^|\s)(\/\S*)$/.exec(text)
+  if (!match) return
+  const index = text.length - match[1].length
+  if (index === 0) return
+  const suffix = value.slice(cursor).match(/^\S*/)?.[0] ?? ""
+  return {
+    start: measureEditText(text.slice(0, index), { widthMethod }),
+    end: measureEditText(value.slice(0, cursor + suffix.length), { widthMethod }),
+  }
+}

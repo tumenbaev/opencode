@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { measureEditText, TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { mentionTriggerIndex, promptOffsetIndex, slashTriggerIndex } from "../../src/prompt/display"
+import { inlineSlashToken, mentionTriggerIndex, promptOffsetIndex, slashTriggerIndex } from "../../src/prompt/display"
 
 // A real textarea checks the helpers against the offsets that the prompt editor shows.
 const setup = await createTestRenderer({ width: 40, height: 4 })
@@ -68,5 +68,36 @@ describe("prompt display", () => {
     expect(offsets.map((offset) => promptOffsetIndex(text, offset, method))).toEqual(
       offsets.map((offset) => boundaries.findLast((index) => measure(text.slice(0, index)) <= offset) ?? 0),
     )
+  })
+
+  test.each(["wcwidth", "unicode"] as const)("finds full inline slash tokens using %s offsets", (method) => {
+    const measure = (value: string) => measureEditText(value, { widthMethod: method })
+    for (const prefix of ["Review ", "Review\n", "Review\t", ...samples.map((sample) => `${sample} `)]) {
+      const start = measure(prefix)
+      expect(inlineSlashToken(prefix + "/review suffix", method, start + 3)).toEqual({ start, end: start + 7 })
+      expect(inlineSlashToken(prefix + "/team/review", method)).toEqual({ start, end: start + 12 })
+      expect(inlineSlashToken(prefix + "/", method)).toEqual({ start, end: start + 1 })
+      for (const name of ["中文", "e\u0301", "👨‍👩‍👧‍👦"]) {
+        const value = `${prefix}/${name}`
+        const token = { start, end: measure(value) }
+        expect(inlineSlashToken(value, method)).toEqual(token)
+        expect(inlineSlashToken(value + " suffix", method, start + 1)).toEqual(token)
+      }
+    }
+    expect(inlineSlashToken("Use /one then /two", method)).toEqual({ start: 14, end: 18 })
+  })
+
+  test("leaves leading commands and non-slash tokens alone", () => {
+    for (const value of [
+      "/",
+      "/review",
+      "/team/review",
+      "Review /api design",
+      "https://opencode.ai/docs",
+      "src/file",
+      "(@/review)",
+    ]) {
+      expect(inlineSlashToken(value, widthMethod)).toBeUndefined()
+    }
   })
 })

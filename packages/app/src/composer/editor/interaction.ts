@@ -19,6 +19,7 @@ import type {
 import {
   composerPopoverActiveID,
   createComposerInteractionState,
+  inlineSlashToken,
   isComposerPopoverOpen,
   selectComposerMode,
   transitionComposer,
@@ -359,10 +360,15 @@ export function createComposerEditor(input: {
   const selectable = () => suggestions().flatMap((item) => (stale(item) ? [] : [item.id]))
 
   const suggestions = () => {
-    if (state.popover.type !== "history") return list().flat()
-    const query = state.popover.query.trim().toLowerCase()
+    if (state.popover.type === "history") {
+      const query = state.popover.query.trim().toLowerCase()
 
-    return history().filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query))
+      return history().filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query))
+    }
+
+    const items = list().flat()
+
+    return state.popover.type === "command-inline" && state.popover.range ? items.filter((item) => !item.local) : items
   }
 
   const execute = (command: ComposerInteractionCommand) => {
@@ -392,6 +398,13 @@ export function createComposerEditor(input: {
       if (command.mode === "shell") input.view.shell?.onOpen()
 
       if (command.mode === "normal") input.view.shell?.onClose()
+
+      return
+    }
+
+    if (command.type === "draft.replaceText") {
+      draft.replaceText(command.value, command.range)
+      restoreFocus()
 
       return
     }
@@ -445,7 +458,11 @@ export function createComposerEditor(input: {
       if (event.type === "popover.close") cancelFocus()
       const previous = readState()
       const result = transitionComposer(previous, event, draft.state)
-      const action = event.type === "popover.select" ? input.onSuggestionSelect?.(event.item) : undefined
+
+      const action =
+        event.type === "popover.select" && !(previous.popover.type === "command-inline" && previous.popover.range)
+          ? input.onSuggestionSelect?.(event.item)
+          : undefined
 
       if (event.type === "popover.select") {
         if (!action) result.commands.forEach(execute)
@@ -710,7 +727,14 @@ export function createComposerEditor(input: {
       dispatch({ type: "input.changed", value, persist: !prompt })
     },
     onCursor(cursor: number) {
+      if (draft.state.cursor === cursor) return
       draft.setCursor(cursor)
+
+      if (input.view.draftOnly || mode() !== "normal") return
+      const value = draft.state.prompt.map((part) => ("content" in part ? part.content : "")).join("")
+
+      if (!inlineSlashToken(value, cursor) && !(state.popover.type === "command-inline" && state.popover.range)) return
+      dispatch({ type: "input.changed", value, persist: false })
     },
     openCommands() {
       dispatch({ type: "commands.open" })

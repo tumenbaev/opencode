@@ -12,10 +12,13 @@ import { Config } from "../../config.js"
 import { Location } from "../../location.js"
 import { Session } from "../../session.js"
 import { SubagentJob } from "../../session/subagent-job.js"
+import { CommandExecution } from "../../session/command-execution.js"
+import { StepFailedError } from "../../session/error.js"
 import { ShellSelect } from "../../shell/select.js"
 import { FSUtil } from "@opencode/util/fs-util"
 import { ConfigMarkdown } from "../markdown.js"
 import { ConfigEntryObserver } from "./entry-observer.js"
+import { expandSnippets } from "./command-snippets.js"
 
 const decodeCommand = SchemaParser.decodeUnknownResult(ConfigCommand.Info)
 const formatIssue = SchemaIssue.makeFormatterDefault()
@@ -47,6 +50,23 @@ export const Plugin = define({
       load,
       reload: ctx.command.reload(),
     })
+    yield* ctx.session.hook("prompt", (event) =>
+      Effect.gen(function* () {
+        if (yield* CommandExecution) return
+        const templates = new Map<string, string>()
+        for (const document of loaded.documents) {
+          for (const [name, command] of Object.entries(document.commands ?? {})) templates.set(name, command.template)
+        }
+        yield* expandSnippets(event.prompt, templates, (template) =>
+          evaluateTemplate(template, "", { location, processes, shell }),
+        ).pipe(
+          // Prompt hooks have no typed failure channel. SessionPrompt.prepare
+          // recovers this existing session error without changing the hook API.
+          Effect.mapError((error) => new StepFailedError({ error: { type: "unknown", message: error.message } })),
+          Effect.orDie,
+        )
+      }),
+    )
     yield* ctx.command.transform((editor) => {
       for (const document of loaded.documents) {
         for (const [name, command] of Object.entries(document.commands ?? {})) {

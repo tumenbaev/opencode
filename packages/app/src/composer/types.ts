@@ -57,4 +57,5 @@ export type ComposerSuggestion = {
   recent?: boolean
   history?: ComposerHistoryEntry
   mention?: ComposerFilePart | ComposerAgentPart | ComposerSkillPart | ComposerSessionPart
+  local?: boolean
 }

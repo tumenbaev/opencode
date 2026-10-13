@@ -14,6 +14,7 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import { Command } from "@opencode/core/command"
 import { Config } from "@opencode/core/config"
 import { ConfigCommandPlugin } from "@opencode/core/config/plugin/command"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { FSUtil } from "@opencode/util/fs-util"
@@ -58,6 +59,7 @@ const it = testEffect(
       Job.node,
       SubagentJob.node,
       Agent.node,
+      PluginHooks.node,
     ]),
     [
       Mcp.node.replace(emptyMcpLayer),
@@ -73,6 +75,51 @@ const it = testEffect(
 const decode = Schema.decodeUnknownSync(Info)
 
 describe("ConfigCommandPlugin.Plugin", () => {
+  it.effect("inline hook uses only the currently loaded documents, last wins, including reload and removal", () =>
+    Effect.gen(function* () {
+      const command = yield* Command.Service
+      const hooks = yield* PluginHooks.Service
+      const config = yield* Config.Test
+      const bus = yield* Bus.Service
+      const document = (commands: Record<string, { template: string }>) =>
+        new Document({ type: "document", info: decode({ commands }) })
+      yield* config.setEntries([
+        document({ snippet: { template: "first" }, removed: { template: "old" } }),
+        document({ snippet: { template: "last" } }),
+      ])
+      let reloads = 0
+      yield* ConfigCommandPlugin.Plugin.effect(
+        host({
+          command: {
+            list: () => Effect.die("unused command.list"),
+            transform: command.transform,
+            reload: () => command.reload().pipe(Effect.tap(() => Effect.sync(() => reloads++))),
+          },
+          event: { subscribe: () => bus.subscribe(Event.Updated) },
+          session: { hook: (name, callback, options) => hooks.register("session", name, callback, options) },
+        }),
+      )
+      yield* command.transform((editor) => {
+        editor.add({ name: "snippet", execute: () => Effect.void })
+        editor.add({ name: "external", execute: () => Effect.void })
+      })
+      const submit = () =>
+        hooks.trigger("session", "prompt", {
+          sessionID: Session.ID.make("ses_test"),
+          messageID: SessionMessage.ID.make("msg_test"),
+          prompt: { text: "Use /snippet /removed /external" },
+          delivery: "steer",
+        })
+      expect((yield* submit()).prompt.text).toBe("Use last old /external")
+      yield* config.setEntries([document({ snippet: { template: "new" } })])
+      // Config changes become visible only after the plugin's existing load.
+      expect((yield* submit()).prompt.text).toBe("Use last old /external")
+      yield* bus.publish(Event.Updated, {})
+      yield* advance(() => reloads === 1)
+      expect((yield* submit()).prompt.text).toBe("Use new /removed /external")
+    }).pipe(Effect.provide(Config.testLayer())),
+  )
+
   for (const item of [
     ...["$&", "$$", "$`", "$'"].flatMap((input) => [
       { template: "Explain $ARGUMENTS.", input, expected: `Explain ${input}.` },

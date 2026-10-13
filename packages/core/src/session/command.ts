@@ -7,6 +7,7 @@ import { Effect } from "effect"
 import { Command } from "../command.js"
 import { Instance } from "../instance/service.js"
 import { Plugin } from "../plugin/service.js"
+import { CommandExecution } from "./command-execution.js"
 
 export const execute = Effect.fn("SessionCommand.execute")(function* (input: {
   session: Session.Info
@@ -34,5 +35,5 @@ export const execute = Effect.fn("SessionCommand.execute")(function* (input: {
         delivery: input.delivery ?? "steer",
       },
     })
-  }).pipe(instances.provide(input.session))
+  }).pipe(instances.provide(input.session), Effect.provideService(CommandExecution, true))
 })
