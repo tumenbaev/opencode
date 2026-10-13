@@ -1,5 +1,5 @@
 import type { ComposerHistoryEntry, ComposerPersistedState, ComposerSuggestion } from "../types"
-import { isAttachment } from "../prompt-parts"
+import { isAttachment, promptLength } from "../prompt-parts"
 
 export type ComposerMode = "normal" | "shell"
 
@@ -14,7 +14,13 @@ export type ComposerPopoverState =
   // Plain arrows recall history entries into the draft, with no list open.
   | { readonly type: "browsing"; readonly index: number; readonly saved: ComposerSavedDraft }
   | { readonly type: "context"; readonly query: string; readonly activeID?: string; readonly chosen?: boolean }
-  | { readonly type: "command-inline"; readonly query: string; readonly activeID?: string; readonly chosen?: boolean }
+  | {
+      readonly type: "command-inline"
+      readonly query: string
+      readonly activeID?: string
+      readonly chosen?: boolean
+      readonly range?: { start: number; end: number }
+    }
   | { readonly type: "command-menu"; readonly query: string; readonly activeID?: string; readonly chosen?: boolean }
   | {
       readonly type: "history"
@@ -84,6 +90,7 @@ export type ComposerInteractionCommand =
   | { readonly type: "draft.setText"; readonly value: string }
   | { readonly type: "draft.addText"; readonly value: string }
   | { readonly type: "draft.removeTextBefore"; readonly value: string }
+  | { readonly type: "draft.replaceText"; readonly value: string; readonly range: { start: number; end: number } }
   | { readonly type: "mention.add"; readonly item: ComposerSuggestion; readonly range?: { start: number; end: number } }
   | { readonly type: "popover.filter"; readonly popover: "command" | "context"; readonly query: string }
   | { readonly type: "suggestion.select"; readonly id: string }
@@ -224,6 +231,17 @@ function inputChanged(
     return changed({ ...state, popover: { type: "context", query }, focus: "editor" }, [
       ...(persist ? [{ type: "draft.setText" as const, value }] : []),
       { type: "popover.filter", popover: "context", query },
+    ])
+  }
+
+  const inline = selectComposerMode(persisted) === "normal" ? inlineSlashToken(value, persisted.cursor) : undefined
+
+  if (inline) {
+    const { query, ...range } = inline
+
+    return changed({ ...state, popover: { type: "command-inline", query, range }, focus: "editor" }, [
+      ...(persist ? [{ type: "draft.setText" as const, value }] : []),
+      { type: "popover.filter", popover: "command", query },
     ])
   }
 
@@ -410,6 +428,17 @@ function suggestionSelected(
     )
   }
 
+  if (state.popover.type === "command-inline" && state.popover.range && item.kind === "command") {
+    if (item.local) return unchanged(state)
+    const range = state.popover.range
+    const value = item.label + (range.end === promptLength(persisted.prompt) ? " " : "")
+
+    return changed({ ...state, popover: CLOSED, focus: "editor" }, [
+      { type: "draft.replaceText", value, range },
+      { type: "focus.editor" },
+    ])
+  }
+
   const current = promptText(persisted)
   const commands: ComposerInteractionCommand[] = []
 
@@ -554,6 +583,15 @@ function replaceTrigger(value: string, trigger: "@" | "/", replacement: string) 
   const index = trigger === "/" ? value.indexOf(trigger) : value.lastIndexOf(trigger)
 
   return index < 0 ? replacement : value.slice(0, index) + replacement
+}
+
+export function inlineSlashToken(value: string, cursor = value.length) {
+  const match = value.slice(0, cursor).match(/\s\/(\S*)$/)
+  if (!match || match.index === undefined) return
+  const start = match.index + 1
+  const end = cursor + (value.slice(cursor).match(/^\S*/)?.[0].length ?? 0)
+
+  return { start, end, query: match[1] ?? "" }
 }
 
 function changed(

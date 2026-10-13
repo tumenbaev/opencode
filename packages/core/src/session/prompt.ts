@@ -16,7 +16,7 @@ import { Plugin } from "../plugin/service.js"
 import { PluginHooks } from "../plugin/hooks.js"
 import { Skill } from "../skill.js"
 import { SessionBlob } from "./blob.js"
-import { AttachmentError, SkillNotFoundError } from "./error.js"
+import { AttachmentError, SkillNotFoundError, StepFailedError } from "./error.js"
 import { SessionStored } from "./stored.js"
 
 // Image types the resizer can decode; others such as HEIC and AVIF go to the provider unchanged.
@@ -39,18 +39,24 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
   const fs = yield* FSUtil.Service
   yield* Plugin.awaitActivation
   const hooks = yield* PluginHooks.Service
-  const event = yield* hooks.trigger("session", "prompt", {
-    sessionID: request.session.id,
-    messageID: request.messageID,
-    prompt: structuredClone({
-      text: request.input.text,
-      files: request.input.files?.slice(),
-      agents: request.input.agents?.slice(),
-      skills: request.input.skills?.slice(),
-    }),
-    metadata: structuredClone(request.input.metadata),
-    delivery: request.input.delivery ?? "steer",
-  })
+  const event = yield* hooks
+    .trigger("session", "prompt", {
+      sessionID: request.session.id,
+      messageID: request.messageID,
+      prompt: structuredClone({
+        text: request.input.text,
+        files: request.input.files?.slice(),
+        agents: request.input.agents?.slice(),
+        skills: request.input.skills?.slice(),
+      }),
+      metadata: structuredClone(request.input.metadata),
+      delivery: request.input.delivery ?? "steer",
+    })
+    .pipe(
+      // Prompt hooks cannot fail in their public contract. Recover only the
+      // known preparation error they carry through the defect channel.
+      Effect.catchDefect((defect) => (defect instanceof StepFailedError ? Effect.fail(defect) : Effect.die(defect))),
+    )
   const input = event.prompt
   const files = input.files
     ? yield* Effect.forEach(input.files, materializeAttachment, { concurrency: 8 })
