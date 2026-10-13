@@ -57,8 +57,28 @@ test.each<{
     popover: { type: "command-inline", query: "re" },
   },
   {
-    name: "keeps inline commands closed when slash is not the entire prompt",
+    name: "opens embedded slash commands at the cursor",
     event: { type: "input.changed", value: "explain /re" },
+    draft: persisted("explain /re"),
+    popover: { type: "command-inline", query: "re", range: { start: 8, end: 11 } },
+  },
+  {
+    name: "uses the active token rather than an earlier slash and includes its suffix",
+    event: { type: "input.changed", value: "use /one\n/remainder later", persist: false },
+    draft: persisted("use /one\n/remainder later", 12),
+    popover: { type: "command-inline", query: "re", range: { start: 9, end: 19 } },
+  },
+  {
+    name: "keeps leading commands with arguments unchanged",
+    event: { type: "input.changed", value: "/review args", persist: false },
+    draft: persisted("/review args", 4),
+    popover: { type: "closed" },
+  },
+  {
+    name: "keeps embedded slash completion out of shell mode",
+    from: { mode: "shell" },
+    event: { type: "input.changed", value: "explain /re", persist: false },
+    draft: persisted("explain /re"),
     popover: { type: "closed" },
   },
   {
@@ -145,3 +165,15 @@ test.each<{
   if (row.command) expect(result.commands).toContainEqual(row.command)
   expect(result.handled).toBe(row.handled ?? false)
 })
+
+test.each(["use path/re", "use https://re", "use (/re", "use /re "])(
+  "does not open slash completion outside an active whitespace-delimited token: %s",
+  (value) => {
+    const result = transitionComposer(
+      createComposerInteractionState(),
+      { type: "input.changed", value, persist: false },
+      persisted(value),
+    )
+    expect(result.state.popover).toEqual({ type: "closed" })
+  },
+)

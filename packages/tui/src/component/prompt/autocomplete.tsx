@@ -19,7 +19,7 @@ import { Locale } from "../../util/locale"
 import type { PromptInfo, PromptPartRef } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
-import { mentionTriggerIndex, slashTriggerIndex } from "../../prompt/display"
+import { inlineSlashToken, mentionTriggerIndex, slashTriggerIndex } from "../../prompt/display"
 import type { FileSystemEntry } from "@opencode/client"
 import { Skill } from "@opencode/schema/skill"
 import { stringWidth } from "../../util/string-width"
@@ -464,6 +464,20 @@ export function Autocomplete(props: {
   )
 
   function insertSlash(name: string) {
+    if (store.index > 0) {
+      const input = props.input()
+      const token = inlineSlashToken(input.plainText, renderer.widthMethod, input.cursorOffset)
+      if (!token || token.start !== store.index) return
+      input.cursorOffset = token.start
+      const start = input.logicalCursor
+      input.cursorOffset = token.end
+      const end = input.logicalCursor
+      const text =
+        `/${name}` + (token.end === measureEditText(input.plainText, { widthMethod: renderer.widthMethod }) ? " " : "")
+      input.deleteRange(start.row, start.col, end.row, end.col)
+      input.insertText(text)
+      return
+    }
     const newText = `/${name} `
     const cursor = props.input().logicalCursor
     props.input().deleteRange(0, 0, cursor.row, cursor.col)
@@ -472,7 +486,7 @@ export function Autocomplete(props: {
   }
 
   const commands = createMemo((): AutocompleteOption[] => {
-    const results: AutocompleteOption[] = keymapCommands().flatMap((command) => {
+    const results: AutocompleteOption[] = (store.index > 0 ? [] : keymapCommands()).flatMap((command) => {
       const slash = command.slash
       if (!slash) return []
       return [slash.name, ...(slash.aliases ?? [])].map((name) => ({
@@ -541,7 +555,7 @@ export function Autocomplete(props: {
     const nonFileOptions: AutocompleteOption[] =
       store.visible === "reference"
         ? [...skillOptions(), ...referenceAliasesValue, ...agentsValue]
-        : store.index === 0
+        : store.visible === "command"
           ? [...commandsValue]
           : []
 
@@ -615,6 +629,12 @@ export function Autocomplete(props: {
   function select() {
     const selected = options()[store.selected]
     if (!selected) return
+    if (store.visible === "command" && store.index > 0) {
+      selected.onSelect?.()
+      setDismissedValue(props.input().plainText)
+      hide()
+      return
+    }
     if (store.visible !== "directory") {
       hide(true)
       selected.onSelect?.()
@@ -791,6 +811,12 @@ export function Autocomplete(props: {
         )
         if (argument?.type === "directory") {
           show("directory", argument.index)
+          return
+        }
+
+        const inline = inlineSlashToken(value, renderer.widthMethod, offset)
+        if (inline) {
+          show("command", inline.start)
           return
         }
 

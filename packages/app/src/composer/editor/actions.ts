@@ -69,6 +69,22 @@ export function createComposerEditorActions(input: ComposerStateStoreInput) {
         })),
       )
     },
+    replaceText(content: string, range: { start: number; end: number }) {
+      let position = 0
+      const prompt = store().prompt.map((part) => {
+        if (isAttachment(part)) return part
+        const start = position
+        position += part.content.length
+
+        if (part.type !== "text" || range.start < start || range.end > position) return part
+
+        return {
+          ...part,
+          content: part.content.slice(0, range.start - start) + content + part.content.slice(range.end - start),
+        }
+      })
+      batch(() => setStore()({ prompt: withOffsets(prompt), cursor: range.start + content.length, retry: undefined }))
+    },
     removeContext(key: string) {
       setStore()("context", "items", (items) => items.filter((item) => item.key !== key))
       clearRetry()

@@ -50,5 +50,6 @@ export type ComposerSuggestion = {
   path?: string
   keybind?: string[]
   recent?: boolean
+  local?: boolean
   mention?: ComposerFilePart | ComposerAgentPart | ComposerSkillPart
 }

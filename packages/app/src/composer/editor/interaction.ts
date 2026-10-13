@@ -16,6 +16,7 @@ import type {
 } from "../types"
 import {
   createComposerInteractionState,
+  inlineSlashToken,
   transitionComposer,
   type ComposerInteractionCommand,
   type ComposerInteractionEvent,
@@ -160,9 +161,21 @@ export function createComposerEditor(input: {
   })
 
   const list = () => (state.popover.type === "context" ? contextList : commandList)
-  const suggestions = () => list().flat()
+  const suggestions = () =>
+    state.popover.type === "command-inline" && state.popover.range
+      ? list()
+          .flat()
+          .filter((item) => !item.local)
+      : list().flat()
 
   const execute = (command: ComposerInteractionCommand) => {
+    if (command.type === "draft.replaceText") {
+      draft.replaceText(command.value, command.range)
+      restoreFocus()
+
+      return
+    }
+
     if (command.type === "draft.setText") {
       draft.setText(command.value)
 
@@ -201,7 +214,10 @@ export function createComposerEditor(input: {
   function dispatch(event: ComposerInteractionEvent) {
     const mode = state.mode
     const result = transitionComposer(state, event, draft.state)
-    const action = event.type === "popover.select" ? input.onSuggestionSelect?.(event.item) : undefined
+    const action =
+      event.type === "popover.select" && !(state.popover.type === "command-inline" && state.popover.range)
+        ? input.onSuggestionSelect?.(event.item)
+        : undefined
 
     if (event.type === "popover.select") {
       if (!action) result.commands.forEach(execute)
@@ -443,7 +459,12 @@ export function createComposerEditor(input: {
       dispatch({ type: "input.changed", value, persist: !prompt })
     },
     onCursor(cursor: number) {
+      if (draft.state.cursor === cursor) return
       draft.setCursor(cursor)
+      if (input.view.draftOnly || state.mode !== "normal") return
+      const value = draft.state.prompt.map((part) => ("content" in part ? part.content : "")).join("")
+      if (!inlineSlashToken(value, cursor) && !(state.popover.type === "command-inline" && state.popover.range)) return
+      dispatch({ type: "input.changed", value, persist: false })
     },
     openCommands() {
       dispatch({ type: "commands.open" })

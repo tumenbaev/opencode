@@ -246,6 +246,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
     ...slashCommands().map((item) => ({
       id: item.id,
       kind: "command" as const,
+      local: item.type === "builtin",
       label: `/${item.trigger}`,
       trigger: item.trigger,
       title: item.title,

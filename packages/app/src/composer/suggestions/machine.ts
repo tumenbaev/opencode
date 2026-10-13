@@ -1,12 +1,12 @@
 import type { ComposerHistoryEntry, ComposerPersistedState, ComposerSuggestion } from "../types"
-import { isAttachment } from "../prompt-parts"
+import { isAttachment, promptLength } from "../prompt-parts"
 
 export type ComposerInteractionState = {
   mode: "normal" | "shell"
   popover:
     | { type: "closed" }
     | { type: "context"; query: string; activeID?: string }
-    | { type: "command-inline"; query: string; activeID?: string }
+    | { type: "command-inline"; query: string; activeID?: string; range?: { start: number; end: number } }
     | { type: "command-menu"; query: string; activeID?: string }
   drag: "idle" | "active"
   focus: "editor" | "command-search" | "external"
@@ -36,6 +36,7 @@ export type ComposerInteractionEvent =
 export type ComposerInteractionCommand =
   | { type: "draft.setText"; value: string }
   | { type: "draft.addText"; value: string }
+  | { type: "draft.replaceText"; value: string; range: { start: number; end: number } }
   | { type: "mention.add"; item: ComposerSuggestion; range?: { start: number; end: number } }
   | { type: "popover.filter"; popover: "command" | "context"; query: string }
   | { type: "suggestion.select"; id: string }
@@ -123,6 +124,17 @@ function inputChanged(
     ])
   }
 
+  const inline = state.mode === "normal" ? inlineSlashToken(value, cursor) : undefined
+
+  if (inline) {
+    const { query, ...range } = inline
+
+    return changed({ ...state, popover: { type: "command-inline", query, range }, focus: "editor" }, [
+      ...setText,
+      { type: "popover.filter", popover: "command", query },
+    ])
+  }
+
   const command = value.match(/^\/(\S*)$/)
 
   if (command) {
@@ -192,6 +204,17 @@ function suggestionSelected(
   item: ComposerSuggestion,
   persisted: ComposerPersistedState,
 ): ComposerEditorTransition {
+  if (state.popover.type === "command-inline" && state.popover.range && item.kind === "command") {
+    if (item.local) return unchanged(state)
+    const range = state.popover.range
+    const value = item.label + (range.end === promptLength(persisted.prompt) ? " " : "")
+
+    return changed({ ...state, popover: { type: "closed" }, focus: "editor" }, [
+      { type: "draft.replaceText", value, range },
+      { type: "focus.editor" },
+    ])
+  }
+
   const current = promptText(persisted)
   const commands: ComposerInteractionCommand[] = []
 
@@ -284,6 +307,15 @@ function replaceTrigger(value: string, trigger: "@" | "/", replacement: string) 
   const index = trigger === "/" ? value.indexOf(trigger) : value.lastIndexOf(trigger)
 
   return index < 0 ? replacement : value.slice(0, index) + replacement
+}
+
+export function inlineSlashToken(value: string, cursor = value.length) {
+  const match = value.slice(0, cursor).match(/\s\/(\S*)$/)
+  if (!match || match.index === undefined) return
+  const start = match.index + 1
+  const end = cursor + (value.slice(cursor).match(/^\S*/)?.[0].length ?? 0)
+
+  return { start, end, query: match[1] ?? "" }
 }
 
 function changed(
