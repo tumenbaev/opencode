@@ -166,12 +166,29 @@ export const MessageContentUpdated = Event.durable({
 })
 export type MessageContentUpdated = typeof MessageContentUpdated.Type
 
+/** Replaces one chronological, bounded group without deleting its transcript rows. */
+export const ContextTrimmed = Event.durable({
+  type: "session.context.trimmed",
+  ...options,
+  schema: {
+    ...Base,
+    targets: Schema.Array(
+      Schema.Struct({
+        messageID: SessionMessage.ID,
+        parts: Schema.Array(NonNegativeInt).pipe(optional),
+      }),
+    ),
+    note: Schema.String,
+  },
+})
+export type ContextTrimmed = typeof ContextTrimmed.Type
+
 export const UsageRecorded = Event.durable({
   type: "session.usage.recorded",
   ...options,
   schema: {
     ...Base,
-    source: Schema.Literals(["title", "compaction"]),
+    source: Schema.Literals(["title", "compaction", "trimming"]),
     cost: Money.USD,
     tokens: TokenUsage.Info,
   },
@@ -671,6 +688,7 @@ export const Definitions = Event.inventory(
   Viewed,
   Archived,
   Unarchived,
+  ContextTrimmed,
   UsageUpdated,
   Deleted,
   Forked,

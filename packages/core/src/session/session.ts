@@ -1,6 +1,6 @@
 export * as Session from "./session.js"
 
-import { DateTime, Effect, Fiber, Scope } from "effect"
+import { DateTime, Effect, Fiber, Option, Scope } from "effect"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { Permission } from "@opencode/schema/permission"
@@ -9,6 +9,7 @@ import { FSUtil } from "@opencode/util/fs-util"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
+import { Plugin } from "../plugin/service.js"
 import { ShellResult } from "../shell/result.js"
 import type { Skill } from "../skill.js"
 import {
@@ -29,6 +30,8 @@ import { SessionShell } from "./shell.js"
 import { SessionSkill } from "./skill.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
+import { SessionTrimming } from "./trimming.js"
+import type { SessionTrimming as TrimmingContract } from "@opencode/schema/session-trimming"
 
 type PromptRequest = SessionPrompt.Input & {
   id?: SessionMessage.ID
@@ -276,6 +279,25 @@ export const make = Effect.fn("Session.make")(function* () {
     yield* get(sessionID)
     yield* execution.awaitIdle(sessionID)
   })
+  const trim = Effect.fn("Session.trim")(function* (sessionID: SessionSchema.ID) {
+    const session = yield* get(sessionID)
+    const result = yield* execution.maintenance(
+      sessionID,
+      Effect.gen(function* () {
+        yield* Plugin.awaitActivation
+        return yield* SessionTrimming.Service.use((trimming) => trimming.run(sessionID))
+      }).pipe(instances.provide(session), Effect.orDie),
+    )
+    return Option.getOrElse(
+      result,
+      (): TrimmingContract.Result => ({
+        status: "busy",
+        beforeTokens: 0,
+        afterTokens: 0,
+        groups: 0,
+      }),
+    )
+  })
   const resume = Effect.fn("Session.resume")(function* (sessionID: SessionSchema.ID) {
     yield* get(sessionID)
     yield* execution.resume(sessionID)
@@ -370,6 +392,7 @@ export const make = Effect.fn("Session.make")(function* () {
     shell,
     skill,
     compact,
+    trim,
     wait,
     resume,
     interrupt,
@@ -396,6 +419,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const shell = operations.shell.bind(undefined, sessionID)
     const skill = operations.skill.bind(undefined, sessionID)
     const compact = operations.compact.bind(undefined, sessionID)
+    const trim = operations.trim.bind(undefined, sessionID)
     const wait = operations.wait.bind(undefined, sessionID)
     const resume = operations.resume.bind(undefined, sessionID)
     const interrupt = operations.interrupt.bind(undefined, sessionID)
@@ -425,6 +449,7 @@ export const make = Effect.fn("Session.make")(function* () {
       shell,
       skill,
       compact,
+      trim,
       wait,
       resume,
       interrupt,

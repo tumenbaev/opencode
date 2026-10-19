@@ -25,6 +25,7 @@ import { AbsolutePath, RelativePath } from "../schema.js"
 import type { SessionSchema } from "./schema.js"
 import { SessionHistory } from "./history.js"
 import { ProjectTable } from "../project/sql.js"
+import { TrimmingHistory } from "./trimming-history.js"
 
 type DatabaseService = Database.Interface["db"]
 type MessageEvent = Exclude<
@@ -271,6 +272,33 @@ function run(db: DatabaseService, event: MessageEvent) {
         .pipe(Effect.orDie)
     }
     const appendMessage = (message: SessionMessage.Info) => insertMessage(db, event, message)
+    if (event.type === SessionEvent.ContextTrimmed.type) {
+      if (event.data.targets.length === 0) return
+      const rows = yield* db
+        .select()
+        .from(SessionMessageTable)
+        .where(
+          and(
+            eq(SessionMessageTable.session_id, event.data.sessionID),
+            or(
+              inArray(
+                SessionMessageTable.id,
+                event.data.targets.map((target) => target.messageID),
+              ),
+              eq(SessionMessageTable.type, "assistant"),
+            ),
+          ),
+        )
+        .orderBy(asc(SessionMessageTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      const messages = rows.map(SessionHistory.decodeMessageRowSync)
+      const updated = TrimmingHistory.apply(messages, event.data.targets, event.data.note)
+      for (const [index, message] of updated.entries()) {
+        if (message !== messages[index]) yield* updateMessage(message)
+      }
+      return
+    }
     const adapter: SessionMessageUpdater.Adapter = {
       getAgent() {
         return db
@@ -646,6 +674,7 @@ const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
     yield* bus.project(SessionEvent.MessageContentUpdated, (event) => run(db, event))
+    yield* bus.project(SessionEvent.ContextTrimmed, (event) => run(db, event))
     yield* bus.project(SessionEvent.UsageRecorded, (event) => applyUsage(db, event.data.sessionID, event.data))
     yield* bus.project(SessionEvent.Forked, (event) => projectFork(db, event))
     yield* bus.project(SessionEvent.InboxDelivered, (event) =>

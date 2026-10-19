@@ -211,6 +211,10 @@ function createSync() {
       const active = state.get(key)
       return active !== undefined && active !== true
     },
+    wait(key: string) {
+      const active = state.get(key)
+      return active && active !== true ? active.promise : Promise.resolve()
+    },
     invalidate(key?: string) {
       if (key) {
         const active = state.get(key)
@@ -369,6 +373,7 @@ export function createData(config: CreateDataInput) {
   // failure does not block the next.
   const sending = new Map<string, Promise<unknown>>()
   const messageLoads = new Map<string, Promise<unknown>>()
+  const messageRefreshes = new Map<string, Promise<unknown>>()
   const compacting = new Map<string, { id: string; observed: Set<string>; request: Promise<SessionInboxCompaction> }>()
   onCleanup(() => compacting.clear())
 
@@ -682,6 +687,37 @@ export function createData(config: CreateDataInput) {
       case "session.deleted":
         removeSession(event.data.sessionID)
         return
+      case "session.context.trimmed": {
+        const { sessionID, targets } = event.data
+        // Revalidate the affected loaded records, not just the newest page. Keep raw metadata
+        // and the pagination cursor; the server owns replacement/part projection. Serialize
+        // trims and wait for outstanding history reads so stale pages cannot undo a trim.
+        const previous = messageRefreshes.get(sessionID)
+        refresh(() => {
+          const request = (async () => {
+            await previous?.catch(() => undefined)
+            await sync.wait(`session.message:${sessionID}`)
+            while (messageLoads.has(sessionID)) await messageLoads.get(sessionID)
+            if (disposed) return
+            const items = await Promise.all(
+              targets
+                .filter((target) => messageIndex.get(sessionID)?.has(target.messageID))
+                .map((target) => api().session.message.get({ sessionID, messageID: target.messageID })),
+            )
+            if (disposed || items.length === 0) return
+            message.update(sessionID, (draft, index) => {
+              for (const item of items) {
+                const position = index.get(item.id)
+                // Do not resurrect a row evicted or reverted while the request was pending.
+                if (position !== undefined) draft[position] = item
+              }
+            })
+          })()
+          track(messageRefreshes, sessionID, request)
+          return request
+        })
+        return
+      }
       case "session.usage.updated":
         if (store.session.info[event.data.sessionID])
           setStore("session", "info", event.data.sessionID, {

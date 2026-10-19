@@ -45,6 +45,7 @@ const executionLayer = Layer.effect(
       drain: () => Deferred.succeed(control.started, undefined).pipe(Effect.andThen(Deferred.await(control.release))),
     })
     return SessionExecution.Service.of({
+      maintenance: coordinator.maintenance,
       active: coordinator.active,
       isActive: coordinator.isActive,
       resume: coordinator.run,

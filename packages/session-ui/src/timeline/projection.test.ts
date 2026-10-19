@@ -6,6 +6,7 @@ import type {
   SessionMessageInfo,
 } from "@opencode/client/promise"
 import { createStore } from "solid-js/store"
+import { timelinePresets } from "./detail"
 import {
   createTimelineProjection,
   reasoningHeading,
@@ -219,6 +220,122 @@ describe("reuseTimelineRows", () => {
 })
 
 describe("createTimelineProjection", () => {
+  // Cover default, separate, grouped, and hidden notices without repeating equivalent presets.
+  test.each([
+    undefined,
+    ...timelinePresets
+      .filter((preset) => ["everything", "compact", "text-only"].includes(preset.id))
+      .map((preset) => preset.value),
+  ])(
+    "renders effective notes separately and suppresses empty records regardless of detail (%j)",
+    (timelineDetail) => {
+      const messages = [
+        {
+          id: "model",
+          type: "model-switched",
+          model: { id: "selected", providerID: "provider" },
+          contextReplacement: "",
+          time: { created: 0 },
+        },
+        {
+          id: "location",
+          type: "location-switched",
+          location: { directory: "/original" },
+          contextReplacement: "",
+          time: { created: 1 },
+        },
+        { id: "user", type: "user", text: "question", time: { created: 2 } },
+        {
+          id: "skill",
+          type: "skill",
+          skill: "review",
+          name: "Original skill",
+          text: "original instructions",
+          contextReplacement: "**Retained note**",
+          time: { created: 3 },
+        },
+        {
+          id: "system",
+          type: "system",
+          text: "original system",
+          description: "Original description",
+          contextReplacement: "",
+          time: { created: 4 },
+        },
+        {
+          id: "synthetic",
+          type: "synthetic",
+          text: "original synthetic",
+          contextReplacement: "Synthetic note",
+          time: { created: 5 },
+        },
+        {
+          id: "shell",
+          type: "shell",
+          shellID: "shell",
+          command: "original command",
+          status: "exited",
+          exit: 1,
+          output: { output: "original output", cursor: 1, size: 1, truncated: false },
+          contextReplacement: "Shell note",
+          time: { created: 6 },
+        },
+        {
+          id: "empty-shell",
+          type: "shell",
+          shellID: "empty-shell",
+          command: "suppressed command",
+          status: "timeout",
+          contextReplacement: "",
+          time: { created: 7 },
+        },
+        { id: "next", type: "user", text: "next question", time: { created: 8 } },
+      ] satisfies SessionMessageInfo[]
+
+      const projection = createTimelineProjection({
+        sessionMessages: messages,
+        status: { type: "idle" },
+        reasoningMode: "full",
+        timelineDetail,
+      })
+
+      expect(keys(projection.rows)).toEqual([
+        "user-message:user",
+        "notice:skill",
+        "notice:synthetic",
+        "turn-gap:shell",
+        "notice:shell",
+        "turn-gap:next",
+        "user-message:next",
+      ])
+      expect(projection.userContextByID.get("user")?.model).toEqual({ id: "selected", providerID: "provider" })
+      expect(projection.userContextByID.get("next")?.model).toEqual({ id: "selected", providerID: "provider" })
+    },
+  )
+
+  test("a suppressed shell turn has no rows or gaps but remains the operational active turn", () => {
+    const messages = [
+      {
+        id: "shell",
+        type: "shell",
+        shellID: "shell",
+        command: "pwd",
+        status: "exited",
+        contextReplacement: "",
+        time: { created: 0 },
+      },
+    ] satisfies SessionMessageInfo[]
+
+    const projection = createTimelineProjection({
+      sessionMessages: messages,
+      status: { type: "idle" },
+      reasoningMode: "full",
+    })
+
+    expect(projection.rows).toEqual([])
+    expect(projection.activeMessageID).toBe("shell")
+  })
+
   test("builds current message, parent, context, and row indexes", () => {
     const selectedModel = { id: "selected", providerID: "provider" } satisfies ModelRef
     const assistantModel = { id: "assistant", providerID: "provider", variant: "fast" } satisfies ModelRef

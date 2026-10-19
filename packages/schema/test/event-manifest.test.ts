@@ -114,6 +114,7 @@ describe("public event manifest", () => {
         "session.archived.1",
         "session.unarchived.1",
         "session.message.content.updated.1",
+        "session.context.trimmed.1",
         "session.usage.recorded.1",
         "session.forked.2",
         "session.inbox.delivered.1",

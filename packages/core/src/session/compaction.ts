@@ -865,6 +865,7 @@ const summaryRoom = (limit: SessionContext.Loaded["model"]["limit"]) =>
  */
 const hasMeasuredPrompt = (message: SessionMessage.Info, model: SessionContext.Loaded["model"]["ref"]) =>
   message.type === "assistant" &&
+  !message.contextInvalidated &&
   message.model.providerID === model.providerID &&
   !message.error &&
   message.tokens !== undefined &&

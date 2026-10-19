@@ -643,3 +643,66 @@ function assistant(id: string, content: SessionMessageAssistant["content"]): Ses
 function pending() {
   return { status: "streaming" as const, input: "" }
 }
+
+test("suppressed standalone history has no rows or notice groups", () => {
+  const messages: SessionMessageInfo[] = [
+    {
+      type: "skill",
+      id: "skill",
+      skill: "skill_private",
+      name: "private-skill",
+      text: "Original",
+      time: { created: 1 },
+      contextReplacement: "",
+    },
+    {
+      type: "model-switched",
+      id: "model",
+      model: { providerID: "provider", id: "model" },
+      time: { created: 2 },
+      contextReplacement: "",
+    },
+    {
+      type: "location-switched",
+      id: "location",
+      location: { directory: "/original" },
+      time: { created: 3 },
+      contextReplacement: "",
+    },
+    {
+      type: "synthetic",
+      id: "instruction",
+      text: "Original",
+      description: "Loaded instructions",
+      metadata: { instruction: { paths: ["AGENTS.md"] } },
+      time: { created: 4 },
+      contextReplacement: "",
+    },
+  ]
+  expect(reduceSessionRows(messages)).toEqual([])
+})
+
+test("replacement notes stand alone instead of retaining instruction grouping or description visibility", () => {
+  const messages: SessionMessageInfo[] = [
+    {
+      type: "synthetic",
+      id: "instruction",
+      text: "Original",
+      metadata: { instruction: { paths: ["AGENTS.md"] } },
+      time: { created: 1 },
+      contextReplacement: "Historical instruction note",
+    },
+    {
+      type: "system",
+      id: "system",
+      text: "Original",
+      time: { created: 2 },
+      contextReplacement: "Historical system note",
+    },
+  ]
+  expect(reduceSessionRows(messages)).toEqual([
+    { type: "message", messageID: "instruction" },
+    { type: "message", messageID: "system" },
+  ])
+  expect(reduceSessionRows([{ ...messages[0], contextReplacement: undefined }])).toEqual([])
+})

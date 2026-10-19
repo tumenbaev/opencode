@@ -12,6 +12,7 @@ import { Dynamic } from "solid-js/web"
 import type { SessionUserActions, SessionUserAttachmentReference, SessionUserComment } from "../actions"
 import { useData } from "../context"
 import { TimelineSeparator } from "../components/timeline-separator"
+import { Markdown } from "../components/markdown"
 import {
   SessionAssistantContent,
   SessionContextToolGroup,
@@ -491,7 +492,11 @@ export function createSessionTimelineRowRenderer(input: {
 
   function Notice(props: { messageID: string; grouped?: boolean }) {
     const inset = () => (props.grouped ? "" : padding())
-    const message = createMemo(() => input.projection.messageByID().get(props.messageID))
+    const replacement = createMemo(() => input.projection.messageByID().get(props.messageID)?.contextReplacement)
+
+    const message = createMemo(() =>
+      replacement() === undefined ? input.projection.messageByID().get(props.messageID) : undefined,
+    )
 
     const compaction = createMemo(() => {
       const value = message()
@@ -581,6 +586,13 @@ export function createSessionTimelineRowRenderer(input: {
 
     return (
       <>
+        <Show when={replacement()}>
+          {(text) => (
+            <div data-slot="session-turn-message-container" class={`w-full ${inset()}`}>
+              <Markdown text={text()} />
+            </div>
+          )}
+        </Show>
         <Show when={compaction()}>
           {(message) => (
             <div data-slot="session-turn-message-container" class={`w-full ${inset()}`}>

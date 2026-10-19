@@ -206,6 +206,13 @@ function sanitize(data: Data): Data {
 }
 
 function sanitizeMessage(message: SessionMessage.Info): SessionMessage.Info {
+  message = {
+    ...message,
+    contextReplacement:
+      message.contextReplacement === undefined
+        ? undefined
+        : redact("context-replacement", message.id, message.contextReplacement),
+  }
   const meta = metadata("message-metadata", message.id, message.metadata)
   if (message.type === "user")
     return {

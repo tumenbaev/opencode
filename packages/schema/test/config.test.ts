@@ -3,13 +3,40 @@ import { Schema } from "effect"
 import { Config } from "../src/config.js"
 import { ConfigAgent } from "../src/config/agent.js"
 import { ConfigMCP } from "../src/config/mcp.js"
+import { ConfigModel } from "../src/config/model.js"
 import { ConfigProvider } from "../src/config/provider.js"
+import { ConfigTrimming } from "../src/config/trimming.js"
 import { Mcp } from "../src/mcp.js"
 import { Provider } from "../src/provider.js"
 import { AbsolutePath } from "../src/schema.js"
 import { WebSearch } from "../src/websearch.js"
 
 describe("Config.Entry", () => {
+  test("trimming only configures the existing model selection without defaults", () => {
+    const decode = Schema.decodeUnknownSync(Config.Info)
+    const selection = Schema.decodeUnknownSync(ConfigModel.Selection)("openai/gpt-6-luna#high")
+    for (const model of ["openai/gpt-6-luna#high", selection]) {
+      const info = decode({ trimming: { model }, compaction: { auto: true } })
+      expect(info.trimming?.model).toEqual(selection)
+      expect(Schema.encodeSync(Config.Info)(info)).toEqual({
+        trimming: { model: selection },
+        compaction: { auto: true },
+      })
+    }
+    expect(Schema.encodeSync(Config.Info)(decode({}))).not.toHaveProperty("trimming")
+    expect(Schema.encodeSync(Config.Info)(new Config.Info({ trimming: undefined }))).toEqual({})
+    expect(Schema.encodeSync(ConfigTrimming.Info)(new ConfigTrimming.Info({ model: undefined }))).toEqual({})
+    expect(decode({ trimming: {} }).trimming?.model).toBeUndefined()
+    expect(Object.keys(ConfigTrimming.Info.fields)).toEqual(["model"])
+    expect(ConfigTrimming.Info.ast.annotations?.identifier).toBe("Config.Trimming")
+    for (const trimming of [false, { model: "gpt-6-luna" }, { model: "openai/gpt-6-luna#" }])
+      expect(() => decode({ trimming })).toThrow()
+    for (const key of ["enabled", "threshold", "automatic", "variant"])
+      expect(() =>
+        Schema.decodeUnknownSync(ConfigTrimming.Info, { onExcessProperty: "error" })({ [key]: true }),
+      ).toThrow()
+  })
+
   test("round-trips tool.use and rejects unsupported action spellings", () => {
     const input = {
       experimental: {

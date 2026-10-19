@@ -81,6 +81,8 @@ export interface Input {
   readonly webSocket?: "session"
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
   readonly inputTokens?: { readonly measured: number; readonly estimated: number }
+  /** Auxiliary request cap, applied before provider hooks so they can adapt unsupported limits. */
+  readonly maxTokens?: number
 }
 
 /** The default output limit: the catalog limit, fitted to the room the prompt leaves in the context window. */
@@ -259,7 +261,9 @@ export const layer = Layer.effect(
           options:
             kind === "primary" || kind === "compaction"
               ? { maxTokens: outputLimit(model.limit, kind, input.inputTokens) }
-              : {},
+              : input.maxTokens === undefined
+                ? {}
+                : { maxTokens: input.maxTokens },
         },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )

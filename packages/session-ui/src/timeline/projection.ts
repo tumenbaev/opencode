@@ -356,26 +356,31 @@ export namespace Timeline {
       turns.findLast((turn) => !pendingInputIDs?.has(turn.id) || turn.entries.some((entry) => entry.type === "idle"))
         ?.id ?? turns.at(-1)?.id
 
-    const visibleNotice = (message: Notice) =>
-      !detail || detail.notices.placement !== "hidden" || timelineNoticeRequired(message)
+    const visibleNotice = (message: Notice) => noticeVisible(message, detail)
 
-    const visibleTurns = detail
-      ? turns.filter((turn) => {
-          if (turn.user) return true
+    const visibleShell = (message: SessionMessageShell) =>
+      message.contextReplacement !== undefined
+        ? message.contextReplacement.length > 0
+        : !detail || detail.shell.placement !== "hidden" || shellFailed(message)
 
-          if (turn.shell && (detail.shell.placement !== "hidden" || shellFailed(turn.shell))) return true
+    const visibleTurns = turns.filter((turn) => {
+      // Keep operational turns intact; only their display rows are suppressed.
+      if (turn.user && turn.user.contextReplacement !== "") return true
 
-          return turn.entries.some((entry) =>
-            entry.type === "notice"
-              ? visibleNotice(entry.message)
-              : entry.type === "idle" ||
-                entry.type === "diff" ||
-                !!entry.message.error ||
-                !!entry.message.retry ||
-                entry.message.content.some((content) => isRenderable(content, showReasoning, detail)),
-          )
-        })
-      : turns
+      if (turn.shell && visibleShell(turn.shell)) return true
+
+      if (!detail && !turn.user && !turn.shell) return true
+
+      return turn.entries.some((entry) =>
+        entry.type === "notice"
+          ? visibleNotice(entry.message)
+          : entry.type === "idle" ||
+            entry.type === "diff" ||
+            !!entry.message.error ||
+            !!entry.message.retry ||
+            entry.message.content.some((content) => isRenderable(content, showReasoning, detail)),
+      )
+    })
 
     const rows: TimelineRow.TimelineRow[] = [
       ...leading.flatMap((message) =>
@@ -387,8 +392,12 @@ export namespace Timeline {
         if (turn.shell)
           return [
             ...(index > 0 ? [new TimelineRow.TurnGap({ userMessageID: turn.id })] : []),
-            ...(!detail || detail.shell.placement !== "hidden" || shellFailed(turn.shell)
-              ? [new TimelineRow.Shell({ userMessageID: turn.id, messageID: turn.shell.id })]
+            ...(visibleShell(turn.shell)
+              ? [
+                  turn.shell.contextReplacement !== undefined
+                    ? new TimelineRow.Notice({ userMessageID: turn.id, messageID: turn.shell.id })
+                    : new TimelineRow.Shell({ userMessageID: turn.id, messageID: turn.shell.id }),
+                ]
               : []),
             ...turn.entries.flatMap((entry) =>
               entry.type === "notice" && visibleNotice(entry.message)
@@ -441,6 +450,7 @@ export namespace Timeline {
             detail,
             new Set(
               messages.flatMap((message) =>
+                message.contextReplacement !== undefined ||
                 message.type === "compaction" ||
                 message.type === "model-switched" ||
                 message.type === "location-switched"
@@ -499,7 +509,12 @@ export namespace Timeline {
 
     if (previousUserMessage) rows.push(new TimelineRow.TurnGap({ userMessageID: turnID }))
 
-    if (userMessage) rows.push(new TimelineRow.UserMessage({ userMessageID: turnID }))
+    if (userMessage && userMessage.contextReplacement !== "")
+      rows.push(
+        userMessage.contextReplacement !== undefined
+          ? new TimelineRow.Notice({ userMessageID: turnID, messageID: userMessage.id })
+          : new TimelineRow.UserMessage({ userMessageID: turnID }),
+      )
 
     let assistantGroupIndex = 0
     let previousAssistantTool = false
@@ -607,7 +622,7 @@ export namespace Timeline {
 
           return
         case "notice":
-          if (detail?.notices.placement === "hidden" && !timelineNoticeRequired(entry.message)) return
+          if (!noticeVisible(entry.message, detail)) return
           appendAssistantSegment(assistantSegment)
           assistantSegment = []
           rows.push(new TimelineRow.Notice({ userMessageID: turnID, messageID: entry.message.id }))
@@ -676,6 +691,12 @@ function shellFailed(message: SessionMessageShell) {
   return (
     message.status === "timeout" || (message.status === "exited" && message.exit !== undefined && message.exit !== 0)
   )
+}
+
+function noticeVisible(message: Notice, detail?: TimelineDetail) {
+  if (message.contextReplacement !== undefined) return message.contextReplacement.length > 0
+
+  return !detail || detail.notices.placement !== "hidden" || timelineNoticeRequired(message)
 }
 
 function groupMessages(rows: TimelineRow.TimelineRow[], detail: TimelineDetail, separate: ReadonlySet<string>) {
@@ -1082,6 +1103,8 @@ function isNotice(message: SessionMessageInfo): message is Notice {
     return false
 
   if (message.type !== "synthetic") return true
+
+  if (message.contextReplacement !== undefined) return true
 
   return !!message.description?.trim() || timelineNoticeRequired(message)
 }

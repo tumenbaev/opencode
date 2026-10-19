@@ -185,12 +185,21 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
 
   createEffect(on([turnTokens, verbosity], rebuild, { defer: true }))
 
+  // Trim revalidation replaces affected records, including assistant part lists. Track
+  // record identities and replacements, not nested streaming text/tool progress.
+  createEffect(
+    on(() => data.session.message.list(sessionID()).map((message) => [message, message.contextReplacement]), rebuild, {
+      defer: true,
+    }),
+  )
+
   const appendMessage = (messageID: string) =>
     setRows(
       produce((draft) => {
         if (draft.some((row) => row.type === "message" && row.messageID === messageID)) return
         const pending = isPending(messageID)
         const message = data.session.message.get(sessionID(), messageID)
+        if (message?.contextReplacement === "") return
         const index =
           message?.type === "compaction" && pending ? queuedStart(draft) : pending ? draft.length : queuedStart(draft)
         if (!pending) completePrevious(draft, index)
@@ -375,6 +384,14 @@ export function reduceSessionRows(
     ...pendingCompactions,
     ...messages.filter(isInput),
   ].reduce<ProjectionEntry[]>((rows, message) => {
+    if (message.contextReplacement !== undefined) {
+      if (message.contextReplacement !== "")
+        rows.push({
+          entry: { type: "message", messageID: message.id },
+          closesPrevious: !pending.has(message.id),
+        })
+      return rows
+    }
     if (message.type !== "assistant") {
       if (message.type === "idle") {
         flushTurn(rows)

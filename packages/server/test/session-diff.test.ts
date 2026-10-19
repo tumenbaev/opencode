@@ -9,7 +9,7 @@ import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionMessage } from "@opencode/core/session/message"
 import { Money } from "@opencode/schema/money"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { tmpdir } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { ServerFetch } from "../src/fetch"
@@ -29,6 +29,7 @@ it.live("serves turn diffs by user message with range validation", () =>
           active: Effect.succeed(new Set()),
           isActive: () => Effect.succeed(false),
           resume: () => Effect.void,
+          maintenance: (_sessionID, effect) => effect.pipe(Effect.map(Option.some)),
           wake: (sessionID) =>
             Effect.gen(function* () {
               yield* bus.publish(SessionEvent.InboxDelivered, { sessionID, inboxID: ids.user })

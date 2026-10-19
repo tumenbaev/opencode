@@ -1,6 +1,6 @@
 export * as SessionExecution from "./execution.js"
 
-import { Cause, Context, Effect, Exit, Layer } from "effect"
+import { Cause, Context, Effect, Exit, Layer, Option } from "effect"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { Job } from "../job.js"
@@ -15,12 +15,17 @@ import { toSessionError } from "./to-session-error.js"
 import { SessionInbox } from "./inbox.js"
 
 export interface Interface {
-  /** Snapshots active execution owned by this process. */
+  /** Snapshots active execution and maintenance reservations owned by this process. */
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   /** Checks process-local ownership, including interruption cleanup and terminal settlement. */
   readonly isActive: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
-  /** Starts execution while idle or joins the active execution. */
+  /** Starts or joins execution, waiting for maintenance cleanup before a forced execution. */
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
+  /** Reserves an idle Session without execution lifecycle events or a durable execution claim. */
+  readonly maintenance: <A, E2, R>(
+    sessionID: SessionSchema.ID,
+    effect: Effect.Effect<A, E2, R>,
+  ) => Effect.Effect<Option.Option<A>, E2, R>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   /**
@@ -35,7 +40,7 @@ export interface Interface {
       readonly resume?: boolean
     },
   ) => Effect.Effect<boolean>
-  /** Resolves once this process owns no active execution for the Session. Returns immediately when idle and never starts work. */
+  /** Resolves once this process owns no execution or maintenance for the Session. Never starts work. */
   readonly awaitIdle: (sessionID: SessionSchema.ID) => Effect.Effect<void>
 }
 
@@ -166,6 +171,7 @@ export const layer = Layer.effect(
           return interrupted
         }),
       resume: coordinator.run,
+      maintenance: coordinator.maintenance,
       wake: coordinator.wake,
       awaitIdle: coordinator.awaitIdle,
     })
@@ -185,6 +191,7 @@ export const noopLayer = Layer.succeed(
     active: Effect.succeed(new Set()),
     isActive: () => Effect.succeed(false),
     resume: () => Effect.void,
+    maintenance: (_sessionID, effect) => effect.pipe(Effect.map(Option.some)),
     wake: () => Effect.void,
     interrupt: () => Effect.succeed(false),
     awaitIdle: () => Effect.void,

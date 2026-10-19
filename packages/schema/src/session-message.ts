@@ -31,6 +31,8 @@ export type ID = typeof ID.Type
 
 const Base = {
   id: ID,
+  /** Effective historical context after trimming: absent keeps the original, empty suppresses it. */
+  contextReplacement: Schema.String.pipe(optional),
   metadata: Schema.Record(Schema.String, Schema.Unknown).pipe(optional),
   time: Schema.Struct({ created: DateTimeUtcFromMillis }),
 }
@@ -229,6 +231,8 @@ export const Assistant = Schema.Struct({
   native: Native.pipe(optional),
   cost: Money.USD.pipe(optional),
   tokens: TokenUsage.Info.pipe(optional),
+  /** Historical usage still counts toward billing, but no longer measures the rewritten prompt. */
+  contextInvalidated: Schema.Boolean.pipe(optional),
   error: SessionError.Error.pipe(optional),
   retry: AssistantRetry.pipe(optional),
   time: Schema.Struct({

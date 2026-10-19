@@ -745,6 +745,7 @@ export function Session(props: {
     }),
   )
   const runPendingAction = createSingleFlight<string>()
+  const runTrim = createSingleFlight<string>()
   const mutatePending = async (action: PendingAction, inboxID: string, failureLabel?: string) => {
     const result = await runPendingAction(inboxID, async () => {
       const request =
@@ -1099,6 +1100,41 @@ export function Session(props: {
           })
           .catch((error) => toast.show({ message: errorMessage(error), variant: "error" }))
         dialog.clear()
+      },
+    },
+    {
+      title: "Trim historical context",
+      id: "session.trim",
+      group: "Session",
+      slash: { name: "trim" },
+      run: () => {
+        dialog.clear()
+        const sessionID = route.sessionID
+        if (data.session.status(sessionID) === "running") return
+        void runTrim(sessionID, async () => {
+          const progress = "Reviewing historical context for trimming…"
+          // Busy responses are normally immediate; avoid flashing a toast for a no-op.
+          const timer = setTimeout(() => toast.show({ message: progress, variant: "info", duration: 300_000 }), 150)
+          const result = await Promise.resolve()
+            .then(() => client.api.session.trim({ sessionID }))
+            .finally(() => {
+              clearTimeout(timer)
+              if (toast.currentToast?.message === progress) toast.dismiss()
+            })
+          if (result.status === "busy") return
+          const stats = `${Locale.number(result.beforeTokens)} → ${Locale.number(result.afterTokens)} tokens · ${result.groups} groups`
+          toast.show({
+            title:
+              result.status === "completed"
+                ? "Historical context trimmed"
+                : result.status === "stale"
+                  ? "Trim skipped: newer work arrived"
+                  : "No eligible historical context to trim or no change needed",
+            message: stats,
+            variant: result.status === "completed" ? "success" : "info",
+            duration: 5000,
+          })
+        }).catch((error) => toast.show({ message: errorMessage(error), variant: "error" }))
       },
     },
     {
@@ -1927,6 +1963,9 @@ function BackgroundToolHint(props: { messages: SessionMessageInfo[] }) {
 function SessionMessageView(props: { message: SessionMessageInfo }) {
   return (
     <Switch>
+      <Match when={props.message.contextReplacement !== undefined}>
+        <HistoricalNote text={props.message.contextReplacement ?? ""} />
+      </Match>
       <Match when={props.message.type === "user"}>
         <UserMessage message={props.message as SessionMessageUser} />
       </Match>
@@ -1956,6 +1995,26 @@ function SessionMessageView(props: { message: SessionMessageInfo }) {
         {(error) => <ExecutionError error={error()} />}
       </Match>
     </Switch>
+  )
+}
+
+function HistoricalNote(props: { text: string }) {
+  const ctx = use()
+  const theme = useTheme()
+  const { currentSyntax: syntax } = useThemes()
+  const plugins = usePlugin()
+  return (
+    <markdown
+      syntaxStyle={syntax()}
+      renderNode={plugins.markdown()}
+      content={props.text}
+      streaming={false}
+      internalBlockMode="top-level"
+      tableOptions={{ style: "grid", cellPaddingX: 1 }}
+      conceal={ctx.markdownMode() === "rendered"}
+      fg={theme.markdown.text}
+      bg={theme.background.base}
+    />
   )
 }
 

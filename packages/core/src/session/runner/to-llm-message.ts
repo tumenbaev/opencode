@@ -237,6 +237,10 @@ const modelSwitched = (message: SessionMessage.ModelSelected, model: Model.Ref):
 }
 
 function toLLMMessage(message: SessionMessage.Info, model: Model.Ref, providerMetadataKey: string): Message[] {
+  if (message.contextReplacement !== undefined)
+    return message.contextReplacement === ""
+      ? []
+      : [Message.make({ id: message.id, role: "assistant", content: message.contextReplacement })]
   switch (message.type) {
     case "agent-switched":
     case "idle":

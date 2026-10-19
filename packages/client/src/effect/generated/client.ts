@@ -59,6 +59,8 @@ import type {
   SessionShellOutput,
   SessionCompactInput,
   SessionCompactOutput,
+  SessionTrimInput,
+  SessionTrimOutput,
   SessionWaitInput,
   SessionWaitOutput,
   SessionRevertStageInput,
@@ -592,6 +594,14 @@ const EndpointSessionCompact = (raw: RawClient["server.session"]) => (input: Ses
     ),
   )
 
+const EndpointSessionTrim = (raw: RawClient["server.session"]) => (input: SessionTrimInput) =>
+  preserveEffect<SessionTrimOutput>()(
+    raw["session.trim"]({ params: { sessionID: input["sessionID"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
 const EndpointSessionWait = (raw: RawClient["server.session"]) => (input: SessionWaitInput) =>
   preserveEffect<SessionWaitOutput>()(
     raw["session.wait"]({ params: { sessionID: input["sessionID"] } }).pipe(Effect.mapError(mapClientError)),
@@ -805,6 +815,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   synthetic: EndpointSessionSynthetic(raw),
   shell: EndpointSessionShell(raw),
   compact: EndpointSessionCompact(raw),
+  trim: EndpointSessionTrim(raw),
   wait: EndpointSessionWait(raw),
   revert: {
     stage: EndpointSessionRevertStage(raw),
