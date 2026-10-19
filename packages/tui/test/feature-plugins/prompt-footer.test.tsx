@@ -4,9 +4,9 @@ import { RGBA, TextRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { Context } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
-import { PromptFooter } from "../../src/feature-plugins/prompt/footer"
+import { PromptFooter, PromptFooterStatus } from "../../src/feature-plugins/prompt/footer"
 
-test("prompt footer separates simultaneous subagent, shell, and usage status", async () => {
+test("prompt footer places usage before subagent and shell counters", async () => {
   const color = RGBA.fromInts(200, 200, 200)
   const subdued = RGBA.fromInts(100, 100, 100)
   const dispatched: string[] = []
@@ -40,7 +40,7 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
     },
   } as unknown as Context
   const app = await testRender(
-    () => <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />,
+    () => <PromptFooterStatus context={context} sessionID="session" mode="normal" showDetails={true} />,
     {
       width: 80,
       height: 2,
@@ -49,15 +49,16 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
 
   try {
     await app.renderOnce()
-    expect(app.captureCharFrame()).toContain("ctrl+j 1 subagent · 1 shell · $1.00")
-    expect(app.captureCharFrame()).toContain("ctrl+p commands")
+    expect(app.captureCharFrame()).toContain("$1.00 · ctrl+j 1 subagent · 1 shell")
+    expect(app.captureCharFrame()).not.toContain("ctrl+p commands")
 
-    await app.mockMouse.moveTo(2, 0)
-    const live = app.renderer.root.getChildren()[0]?.getChildren()[0]?.getChildren()[0]
+    const counterX = app.captureCharFrame().split("\n")[0]!.indexOf("ctrl+j") + 1
+    await app.mockMouse.moveTo(counterX, 0)
+    const live = app.renderer.root.getChildren()[0]?.getChildren()[1]?.getChildren()[0]
     expect(live).toBeInstanceOf(TextRenderable)
     expect((live as TextRenderable).fg.toInts()).toEqual(color.toInts())
 
-    await app.mockMouse.click(2, 0)
+    await app.mockMouse.click(counterX, 0)
     expect(dispatched).toEqual(["session.child.first"])
   } finally {
     app.renderer.destroy()
@@ -109,12 +110,8 @@ test("prompt footer can hide details", async () => {
   const app = await testRender(
     () => (
       <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
-        <PromptFooter
-          context={context}
-          sessionID={sessionID()}
-          mode="normal"
-          showDetails={showDetails()}
-        />
+        <PromptFooterStatus context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
+        <PromptFooter context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
       </box>
     ),
     {

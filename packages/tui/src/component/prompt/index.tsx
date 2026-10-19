@@ -105,14 +105,7 @@ function randomIndex(count: number) {
   return Math.floor(Math.random() * count)
 }
 
-export function PromptInterruptStatus(props: {
-  armed: boolean
-  animations?: boolean
-  text: RGBA
-  subdued: RGBA
-  warning: RGBA
-  flash?: RGBA
-}) {
+export function PromptInterruptStatus(props: { armed: boolean; animations?: boolean; warning: RGBA; flash?: RGBA }) {
   const ignition = createAnimatable(
     { level: 0 },
     { enabled: () => props.animations ?? false, transition: tween({ duration: 0.22 }) },
@@ -135,12 +128,11 @@ export function PromptInterruptStatus(props: {
   })
 
   return (
-    <text fg={props.armed ? armedColor() : props.text} wrapMode="none" truncate flexShrink={1}>
-      esc{" "}
-      <span style={{ fg: props.armed ? armedColor() : props.subdued }}>
-        {props.armed ? "again to interrupt" : "interrupt"}
-      </span>
-    </text>
+    <Show when={props.armed}>
+      <text fg={armedColor()} wrapMode="none" flexShrink={0}>
+        esc again to interrupt
+      </text>
+    </Show>
   )
 }
 
@@ -1607,7 +1599,6 @@ export function Prompt(props: PromptProps) {
       // No session yet: show where the next session will be created.
       return currentLocation.ref ?? data.location.default()
     }
-    if (status() !== "idle") return
     return data.session.get(props.sessionID)?.location
   })
   const locationLabel = createMemo(() => {
@@ -1874,32 +1865,23 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
           <Slot path="prompt.footer" input={footerInput()}>
-            <Slot path="prompt.footer.status" input={footerInput()}>
-              <box
-                flexGrow={1}
-                flexShrink={1}
-                minWidth={0}
-                onSizeChange={function (this: BoxRenderable) {
-                  const width = this.width
-                  queueMicrotask(() => setLocationWidth(width))
-                }}
-              >
+            <box flexDirection="row" gap={1} flexShrink={1} minWidth={0}>
+              <Slot path="prompt.footer.status" input={footerInput()}>
                 <Switch>
-                  <Match when={status() === "running"}>
-                    <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
-                      <box marginLeft={1}>
-                        <Show when={config.animations ?? true} fallback={<text fg={theme.text.muted}>[⋯]</text>}>
-                          <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                        </Show>
-                      </box>
-                      <PromptInterruptStatus
-                        armed={store.interrupt > 0}
-                        animations={animationsEnabled()}
-                        text={theme.text.base}
-                        subdued={theme.text.muted}
-                        warning={theme.text.feedback.warning.base}
-                        flash={theme.decrease(theme.text.feedback.warning.base, 2)}
-                      />
+                  <Match when={status() === "running" || (!move.progress() && !move.pendingNew())}>
+                    <box id="prompt.footer.progress" marginLeft={1} flexShrink={0}>
+                      <Show when={config.animations ?? true} fallback={<text fg={theme.text.muted}>[⋯]</text>}>
+                        <spinner
+                          color={status() === "running" ? spinnerDef().color : theme.text.muted}
+                          frames={
+                            status() === "running"
+                              ? spinnerDef().frames
+                              : [spinnerDef().frames[0]!.replaceAll("■", "⬝")]
+                          }
+                          interval={40}
+                          autoplay={status() === "running"}
+                        />
+                      </Show>
                     </box>
                   </Match>
                   <Match when={move.progress()}>
@@ -1919,28 +1901,17 @@ export function Prompt(props: PromptProps) {
                       </text>
                     </box>
                   </Match>
-                  <Match when={true}>
-                    <Show when={locationLabelDisplay()} fallback={<text />}>
-                      {(location) => (
-                        <text
-                          id="prompt.footer.location"
-                          fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
-                          wrapMode="none"
-                          truncate
-                          flexGrow={1}
-                          flexShrink={1}
-                          onMouseOver={locationActions.onMouseOver}
-                          onMouseOut={locationActions.onMouseOut}
-                          onMouseUp={locationActions.onMouseUp}
-                        >
-                          {location()}
-                        </text>
-                      )}
-                    </Show>
-                  </Match>
                 </Switch>
-              </box>
-            </Slot>
+              </Slot>
+              <Show when={status() === "running"}>
+                <PromptInterruptStatus
+                  armed={store.interrupt > 0}
+                  animations={animationsEnabled()}
+                  warning={theme.text.feedback.warning.base}
+                  flash={theme.decrease(theme.text.feedback.warning.base, 2)}
+                />
+              </Show>
+            </box>
             <Slot path="prompt.footer.file" input={footerInput()}>
               <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
@@ -1955,6 +1926,34 @@ export function Prompt(props: PromptProps) {
                 )}
               </Show>
             </Slot>
+            <box
+              flexGrow={1}
+              flexShrink={1}
+              flexBasis={0}
+              minWidth={0}
+              alignItems="flex-end"
+              onSizeChange={function (this: BoxRenderable) {
+                const width = this.width
+                queueMicrotask(() => setLocationWidth(width))
+              }}
+            >
+              <Show when={locationLabelDisplay()}>
+                {(location) => (
+                  <text
+                    id="prompt.footer.location"
+                    fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
+                    wrapMode="none"
+                    truncate
+                    flexShrink={1}
+                    onMouseOver={locationActions.onMouseOver}
+                    onMouseOut={locationActions.onMouseOut}
+                    onMouseUp={locationActions.onMouseUp}
+                  >
+                    {location()}
+                  </text>
+                )}
+              </Show>
+            </box>
           </Slot>
         </box>
       </box>

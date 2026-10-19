@@ -1,23 +1,23 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, Show } from "solid-js"
 import { contextUsage, formatContextUsage } from "../../util/session"
 import { useTerminalDimensions } from "@opentui/solid"
 import { TextAttributes } from "@opentui/core"
 import { useInteractivity } from "../../context/interactivity"
-import { stringWidth } from "../../util/string-width"
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
 })
 
-export function PromptFooter(props: {
+type FooterProps = {
   context: Plugin.Context
   sessionID?: string
   mode: "normal" | "shell"
   showDetails: boolean
-}) {
-  const dimensions = useTerminalDimensions()
+}
+
+export function PromptFooterStatus(props: FooterProps) {
   const [liveHovered, setLiveHovered] = createSignal(false)
   const subagents = createMemo(() => {
     if (!props.sessionID) return 0
@@ -49,91 +49,85 @@ export function PromptFooter(props: {
     ].filter((item): item is string => Boolean(item))
   })
   const live = createMemo(() => Boolean(subagents() || shells()))
-  // Prompt hints read as disabled while the session does not own input, e.g. while a side panel is focused.
-  const interactive = useInteractivity()
   const shortcut = (id: string) => props.context.keymap.shortcuts(id)[0]
-  const layout = createMemo(() => {
-    const command = shortcut("command.palette.show")
-    if (status().length === 0) return { usage: false, shortcuts: dimensions().width >= 44 }
-    return promptFooterLayout({
-      width: Math.max(0, dimensions().width - 8),
-      usage: status(),
-      shortcuts: command ? [`${command} commands`] : [],
-    })
-  })
 
   return (
-    <Switch>
-      <Match when={props.mode === "normal"}>
-        <Switch>
-          <Match when={live() || status().length > 0}>
-            <box flexDirection="row" flexShrink={props.showDetails && layout().usage ? 0 : 1} minWidth={0}>
-              <Show when={live()}>
-                <box
-                  flexShrink={0}
-                  onMouseOver={() => setLiveHovered(true)}
-                  onMouseOut={() => setLiveHovered(false)}
-                  onMouseUp={() => props.context.keymap.dispatch("session.child.first")}
-                >
-                  <text
-                    fg={liveHovered() ? props.context.theme.text.base : props.context.theme.text.muted}
-                    wrapMode="none"
-                  >
-                    <Show when={shortcut("session.child.first")}>
-                      {(value) => <span style={{ fg: props.context.theme.text.base }}>{value()} </span>}
-                    </Show>
-                    <Show when={subagents()}>{(value) => <>{value()}</>}</Show>
-                    <Show when={subagents() && shells()}> · </Show>
-                    <Show when={shells()}>{(value) => <>{value()}</>}</Show>
-                  </text>
-                </box>
-              </Show>
-              <Show when={props.showDetails && layout().usage && status().length > 0}>
-                <text fg={props.context.theme.text.muted} wrapMode="none" flexShrink={0}>
-                  <Show when={live()}> · </Show>
-                  {status().join(" · ")}
-                </text>
-              </Show>
-            </box>
-          </Match>
-          <Match when={props.showDetails && layout().shortcuts}>
-            <text
-              fg={interactive() ? props.context.theme.text.base : props.context.theme.text.action.primary.disabled}
-              attributes={interactive() ? 0 : TextAttributes.DIM}
-              flexShrink={0}
-            >
-              {shortcut("agent.cycle")}{" "}
-              <span style={interactive() ? { fg: props.context.theme.text.muted } : {}}>agents</span>
-            </text>
-          </Match>
-        </Switch>
-        <Show when={props.showDetails && layout().shortcuts}>
-          <text
-            fg={interactive() ? props.context.theme.text.base : props.context.theme.text.action.primary.disabled}
-            attributes={interactive() ? 0 : TextAttributes.DIM}
-            wrapMode="none"
-            flexShrink={0}
-          >
-            {shortcut("command.palette.show")}{" "}
-            <span style={interactive() ? { fg: props.context.theme.text.muted } : {}}>commands</span>
+    <Show when={props.mode === "normal" && (live() || (props.showDetails && status().length > 0))}>
+      <box flexDirection="row" flexShrink={1} minWidth={0}>
+        <Show when={props.showDetails && status().length > 0}>
+          <text fg={props.context.theme.text.muted} wrapMode="none" truncate flexShrink={1}>
+            {status().join(" · ")}
+            <Show when={live()}> · </Show>
           </text>
         </Show>
-      </Match>
-      <Match when={props.mode === "shell"}>
+        <Show when={live()}>
+          <box
+            flexShrink={0}
+            onMouseOver={() => setLiveHovered(true)}
+            onMouseOut={() => setLiveHovered(false)}
+            onMouseUp={() => props.context.keymap.dispatch("session.child.first")}
+          >
+            <text fg={liveHovered() ? props.context.theme.text.base : props.context.theme.text.muted} wrapMode="none">
+              <Show when={shortcut("session.child.first")}>
+                {(value) => <span style={{ fg: props.context.theme.text.base }}>{value()} </span>}
+              </Show>
+              <Show when={subagents()}>{(value) => <>{value()}</>}</Show>
+              <Show when={subagents() && shells()}> · </Show>
+              <Show when={shells()}>{(value) => <>{value()}</>}</Show>
+            </text>
+          </box>
+        </Show>
+      </box>
+    </Show>
+  )
+}
+
+export function PromptFooter(props: FooterProps) {
+  const dimensions = useTerminalDimensions()
+  // Prompt hints read as disabled while the session does not own input, e.g. while a side panel is focused.
+  const interactive = useInteractivity()
+  const command = () => props.context.keymap.shortcuts("command.palette.show")[0]
+
+  return (
+    <Show
+      when={props.mode === "normal"}
+      fallback={
         <text fg={props.context.theme.text.base} flexShrink={0}>
           esc{" "}
           <span style={{ fg: props.context.theme.text.muted }}>
             {dimensions().width < 44 ? "shell" : "exit shell mode"}
           </span>
         </text>
-      </Match>
-    </Switch>
+      }
+    >
+      <Show when={props.showDetails && dimensions().width >= 44 && command()}>
+        <text
+          fg={interactive() ? props.context.theme.text.base : props.context.theme.text.action.primary.disabled}
+          attributes={interactive() ? 0 : TextAttributes.DIM}
+          wrapMode="none"
+          flexShrink={0}
+        >
+          {command()} <span style={interactive() ? { fg: props.context.theme.text.muted } : {}}>commands</span>
+        </text>
+      </Show>
+    </Show>
   )
 }
 
 export default Plugin.define({
   id: "opencode.prompt.footer",
   setup(context) {
+    context.ui.slot({
+      append: "prompt.footer.status",
+      render: (props) => (
+        <PromptFooterStatus
+          context={context}
+          sessionID={props.sessionID}
+          mode={props.mode}
+          showDetails={props.showDetails}
+        />
+      ),
+    })
     context.ui.slot({
       append: "prompt.footer",
       render: (props) => (
@@ -142,15 +136,3 @@ export default Plugin.define({
     })
   },
 })
-
-function promptFooterLayout(input: { width: number; usage: string[]; shortcuts: string[] }) {
-  const usage = input.usage.join(" · ")
-  const shortcuts = input.shortcuts.join(" · ")
-  const available = Math.max(0, input.width - Math.min(28, Math.floor(input.width / 2)))
-  if (usage && shortcuts && stringWidth(`${usage} · ${shortcuts}`) <= available) {
-    return { usage: true, shortcuts: true }
-  }
-  if (usage && stringWidth(usage) <= available) return { usage: true, shortcuts: false }
-  if (!usage && shortcuts && stringWidth(shortcuts) <= available) return { usage: false, shortcuts: true }
-  return { usage: false, shortcuts: false }
-}
