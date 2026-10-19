@@ -120,6 +120,7 @@ const execution = (llmClient: Layer.Layer<LLMClientService>) =>
         drain: (sessionID, force) => sessionRunner.drain({ sessionID, force }).pipe(Effect.asVoid),
       })
       return SessionExecution.Service.of({
+        maintenance: coordinator.maintenance,
         active: coordinator.active,
         isActive: coordinator.isActive,
         resume: coordinator.run,

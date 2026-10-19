@@ -57,6 +57,24 @@ function withoutEmptyCompatibilityContainers(input: Record<string, unknown>) {
 }
 
 describe("ConfigNormalize", () => {
+  test("preserves native manual trimming selection without migrating provider or variant aliases", () => {
+    const selection = { providerID: "openai", model: "gpt-6-luna", variant: "high" }
+    for (const model of ["openai/gpt-6-luna#high", selection]) {
+      const result = normalized({ trimming: { model }, compaction: { auto: true, buffer: 100 } })
+      expect(result.diagnostics).toEqual([])
+      expect(result.encoded).toEqual({ trimming: { model: selection }, compaction: { auto: true, buffer: 100 } })
+    }
+    expect(normalized({ trimming: {} }).encoded).toEqual({ trimming: {} })
+    expect(normalized({}).encoded).not.toHaveProperty("trimming")
+    expect(
+      decoded({ trimming: { model: "console-anthropic/claude#high", variant: "low" } }).trimming?.model,
+    ).toMatchObject({
+      providerID: "console-anthropic",
+      model: "claude",
+      variant: "high",
+    })
+  })
+
   test("accepts tool.use without losing statement order", () => {
     const policies = [
       { action: "tool.use", effect: "deny", resource: "shell:*" },

@@ -99,6 +99,13 @@ export type SessionInboxSyntheticPayload = { text: string; description?: string;
 
 export type SessionInboxCompactionPayload = {}
 
+export type SessionTrimmingResult = {
+  status: "busy" | "unchanged" | "stale" | "completed"
+  beforeTokens: number
+  afterTokens: number
+  groups: number
+}
+
 export type ShellID = string
 
 export type SessionMessageNative = { [x: string]: JsonValue }
@@ -425,6 +432,7 @@ export type SessionForkBoundary =
 
 export type SessionMessageAgentSelected = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   type: "agent-switched"
@@ -434,6 +442,7 @@ export type SessionMessageAgentSelected = {
 
 export type SessionMessageSynthetic = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   text: string
@@ -443,6 +452,7 @@ export type SessionMessageSynthetic = {
 
 export type SessionMessageSystem = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   type: "system"
@@ -453,6 +463,7 @@ export type SessionMessageSystem = {
 export type SessionMessageCompactionRunning = {
   type: "compaction"
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   status: "running"
@@ -490,6 +501,7 @@ export type PromptSkillAttachment = { id: SkillID; name: SkillName; text?: strin
 
 export type SessionMessageSkill = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   type: "skill"
@@ -527,6 +539,7 @@ export type SessionInboxCompaction = {
 
 export type SessionMessageShell = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number; completed?: number }
   type: "shell"
@@ -581,6 +594,7 @@ export type SessionMessageAssistantRetry = { attempt: number; at: number; error:
 export type SessionMessageCompactionFailed = {
   type: "compaction"
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   status: "failed"
@@ -592,6 +606,7 @@ export type SessionMessageCompactionFailed = {
 
 export type SessionMessageIdle = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   type: "idle"
@@ -1022,6 +1037,7 @@ export type ConfigModelCapabilities = {
 
 export type SessionMessageLocationSwitched = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   type: "location-switched"
@@ -1056,6 +1072,7 @@ export type WorktreeList = Array<WorktreeDirectory>
 
 export type SessionMessageModelSelected = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   type: "model-switched"
@@ -1066,6 +1083,7 @@ export type SessionMessageModelSelected = {
 export type SessionMessageCompactionCompleted = {
   type: "compaction"
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   status: "completed"
@@ -1154,6 +1172,7 @@ export type SessionInboxUserPayload = {
 
 export type SessionMessageUser = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number }
   text: string
@@ -1277,6 +1296,16 @@ export type SessionUnarchived = {
   durable: { aggregateID: string; seq: EventSeq; version: 1 }
   location?: LocationRef
   data: { sessionID: SessionID }
+}
+
+export type SessionContextTrimmed = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.context.trimmed"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID; targets: Array<{ messageID: SessionMessageID; parts?: Array<number> }>; note: string }
 }
 
 export type SessionDeleted = {
@@ -1696,7 +1725,12 @@ export type SessionUsageRecorded = {
   type: "session.usage.recorded"
   durable: { aggregateID: string; seq: EventSeq; version: 1 }
   location?: LocationRef
-  data: { sessionID: SessionID; source: "title" | "compaction" | "generate"; cost: MoneyUSD; tokens: TokenUsageInfo }
+  data: {
+    sessionID: SessionID
+    source: "title" | "compaction" | "generate" | "trimming"
+    cost: MoneyUSD
+    tokens: TokenUsageInfo
+  }
 }
 
 export type LocationShutdown = {
@@ -2549,6 +2583,7 @@ export type ConfigEntry =
           keep?: { tokens?: number }
           buffer?: ConfigCompactionPercent | number
         }
+        trimming?: { model?: string | { providerID: string; model: string; variant?: string } }
         skills?: Array<string>
         commands?: {
           [x: string]: {
@@ -2771,6 +2806,7 @@ export type SessionInboxInfo = SessionInboxUser | SessionInboxSynthetic | Sessio
 
 export type SessionMessageAssistant = {
   id: SessionMessageID
+  contextReplacement?: string
   metadata?: { [x: string]: JsonValue }
   time: { created: number; firstToken?: number; streamed?: number; completed?: number }
   type: "assistant"
@@ -2783,6 +2819,7 @@ export type SessionMessageAssistant = {
   native?: SessionMessageNative
   cost?: MoneyUSD
   tokens?: TokenUsageInfo
+  contextInvalidated?: boolean
   error?: SessionStructuredError
   retry?: SessionMessageAssistantRetry
 }
@@ -2890,6 +2927,7 @@ export type SessionEventDurable =
   | SessionViewed
   | SessionArchived
   | SessionUnarchived
+  | SessionContextTrimmed
   | SessionDeleted
   | SessionForked
   | SessionInboxDelivered
@@ -2948,6 +2986,7 @@ export type V2Event =
   | SessionViewed
   | SessionArchived
   | SessionUnarchived
+  | SessionContextTrimmed
   | SessionUsageUpdated
   | SessionDeleted
   | SessionForked
@@ -3579,6 +3618,10 @@ export type SessionCompactInput = {
 }
 
 export type SessionCompactOutput = { data: SessionInboxCompaction }["data"]
+
+export type SessionTrimInput = { readonly sessionID: string }
+
+export type SessionTrimOutput = { data: SessionTrimmingResult }["data"]
 
 export type SessionRevertStageInput = {
   readonly sessionID: string
@@ -4483,6 +4526,7 @@ export type EventSubscribeInput = {
         | "session.viewed"
         | "session.archived"
         | "session.unarchived"
+        | "session.context.trimmed"
         | "session.usage.updated"
         | "session.deleted"
         | "session.forked"

@@ -264,6 +264,15 @@ export type SessionCompactInput = {
 export type SessionCompactOutput = SessionInbox.Compaction
 export type SessionCompactOperation<E = never> = (input: SessionCompactInput) => Effect.Effect<SessionCompactOutput, E>
 
+export type SessionTrimInput = { readonly sessionID: Session.ID }
+export type SessionTrimOutput = {
+  readonly status: "busy" | "unchanged" | "stale" | "completed"
+  readonly beforeTokens: number
+  readonly afterTokens: number
+  readonly groups: number
+}
+export type SessionTrimOperation<E = never> = (input: SessionTrimInput) => Effect.Effect<SessionTrimOutput, E>
+
 export type SessionRevertStageInput = {
   readonly sessionID: Session.ID
   readonly messageID: SessionMessage.ID
@@ -425,6 +434,7 @@ export interface SessionApi<E = never> {
   readonly synthetic: SessionSyntheticOperation<E>
   readonly shell: SessionShellOperation<E>
   readonly compact: SessionCompactOperation<E>
+  readonly trim: SessionTrimOperation<E>
   readonly revert: {
     readonly stage: SessionRevertStageOperation<E>
     readonly clear: SessionRevertClearOperation<E>
@@ -754,6 +764,24 @@ export type ExperimentalSessionLogOutput =
             | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
             | undefined
           readonly data: { readonly sessionID: Session.ID }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.context.trimmed"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: {
+            readonly sessionID: Session.ID
+            readonly targets: ReadonlyArray<{
+              readonly messageID: SessionMessage.ID
+              readonly parts?: ReadonlyArray<number> | undefined
+            }>
+            readonly note: string
+          }
         }
       | {
           readonly id: Event.ID
@@ -1409,7 +1437,7 @@ export type ExperimentalSessionLogOutput =
             | undefined
           readonly data: {
             readonly sessionID: Session.ID
-            readonly source: "title" | "compaction" | "generate"
+            readonly source: "title" | "compaction" | "generate" | "trimming"
             readonly cost: Money.USD
             readonly tokens: {
               readonly input: number
@@ -2112,6 +2140,7 @@ export type EventSubscribeInput = {
         | "session.viewed"
         | "session.archived"
         | "session.unarchived"
+        | "session.context.trimmed"
         | "session.usage.updated"
         | "session.deleted"
         | "session.forked"

@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { FileSystem } from "@opencode/core/filesystem"
-import { Clock, DateTime, Effect, Fiber, Latch, Layer, LayerMap, Queue, Schema, Stream } from "effect"
+import { Clock, DateTime, Effect, Fiber, Latch, Layer, LayerMap, Option, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { eq } from "drizzle-orm"
 import { Agent } from "@opencode/core/agent"
@@ -56,6 +56,7 @@ const execution = Layer.succeed(
     active: Effect.sync(() => new Set()),
     isActive: () => Effect.succeed(false),
     resume: () => Effect.void,
+    maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
     interrupt: () => Effect.succeed(false),
     wake: (sessionID) =>
       Effect.suspend(() => {

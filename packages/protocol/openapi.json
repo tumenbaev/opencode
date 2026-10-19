@@ -2736,6 +2736,81 @@
         }
       }
     },
+    "/api/session/{sessionID}/trim": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.trim",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SessionTrimming.Result"
+                    }
+                  },
+                  "required": ["data"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError | LocationNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Manually trim session context. Busy sessions return a busy result without changing history.",
+        "summary": "Trim session context"
+      }
+    },
     "/api/experimental/session/{sessionID}/wait": {
       "post": {
         "tags": ["session"],
@@ -10292,6 +10367,7 @@
                     "session.viewed",
                     "session.archived",
                     "session.unarchived",
+                    "session.context.trimmed",
                     "session.usage.updated",
                     "session.deleted",
                     "session.forked",
@@ -10403,6 +10479,7 @@
                           "session.viewed",
                           "session.archived",
                           "session.unarchived",
+                          "session.context.trimmed",
                           "session.usage.updated",
                           "session.deleted",
                           "session.forked",
@@ -17233,6 +17310,39 @@
             },
             "additionalProperties": false
           },
+          "trimming": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^/#]+\\/[^#]+(?:#[^#]+)?$"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "providerID": {
+                        "type": "string",
+                        "pattern": "^[^/#]+$"
+                      },
+                      "model": {
+                        "type": "string",
+                        "pattern": "^[^#]+$"
+                      },
+                      "variant": {
+                        "type": "string",
+                        "pattern": "^[^#]+$"
+                      }
+                    },
+                    "required": ["providerID", "model"],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
           "skills": {
             "type": "array",
             "items": {
@@ -23333,6 +23443,9 @@
             "$ref": "#/components/schemas/session.unarchived"
           },
           {
+            "$ref": "#/components/schemas/session.context.trimmed"
+          },
+          {
             "$ref": "#/components/schemas/session.deleted"
           },
           {
@@ -23886,6 +23999,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -23918,6 +24034,9 @@
         "properties": {
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "contextReplacement": {
+            "type": "string"
           },
           "metadata": {
             "type": "object"
@@ -24000,6 +24119,9 @@
           },
           "tokens": {
             "$ref": "#/components/schemas/TokenUsage.Info"
+          },
+          "contextInvalidated": {
+            "type": "boolean"
           },
           "error": {
             "$ref": "#/components/schemas/Session.StructuredError"
@@ -24167,6 +24289,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24217,6 +24342,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24261,6 +24389,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24298,6 +24429,9 @@
         "properties": {
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "contextReplacement": {
+            "type": "string"
           },
           "metadata": {
             "type": "object"
@@ -24370,6 +24504,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24429,6 +24566,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24464,6 +24604,9 @@
         "properties": {
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "contextReplacement": {
+            "type": "string"
           },
           "metadata": {
             "type": "object"
@@ -24539,6 +24682,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24575,6 +24721,9 @@
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
           },
+          "contextReplacement": {
+            "type": "string"
+          },
           "metadata": {
             "type": "object"
           },
@@ -24607,6 +24756,9 @@
         "properties": {
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "contextReplacement": {
+            "type": "string"
           },
           "metadata": {
             "type": "object"
@@ -24732,6 +24884,9 @@
         "properties": {
           "id": {
             "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "contextReplacement": {
+            "type": "string"
           },
           "metadata": {
             "type": "object"
@@ -25324,6 +25479,33 @@
         "required": ["info", "messages"],
         "additionalProperties": false
       },
+      "SessionTrimming.Result": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["busy", "unchanged", "stale", "completed"]
+          },
+          "beforeTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "afterTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "groups": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": ["status", "beforeTokens", "afterTokens", "groups"],
+        "additionalProperties": false,
+        "description": "Outcome of manual context trimming. Busy results report zero tokens and groups."
+      },
       "SessionsCursor": {
         "type": "string",
         "description": "Opaque pagination cursor returned as cursor.previous or cursor.next in the previous response."
@@ -25844,6 +26026,9 @@
           },
           {
             "$ref": "#/components/schemas/session.unarchived"
+          },
+          {
+            "$ref": "#/components/schemas/session.context.trimmed"
           },
           {
             "$ref": "#/components/schemas/session.usage.updated"
@@ -28077,6 +28262,79 @@
               }
             },
             "required": ["sessionID", "reason"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "durable", "data"],
+        "additionalProperties": false
+      },
+      "session.context.trimmed": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["session.context.trimmed"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "$ref": "#/components/schemas/Event.Seq"
+              },
+              "version": {
+                "$ref": "#/components/schemas/Event.VersionEncoded_c77c5abcb68d"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "messageID": {
+                      "$ref": "#/components/schemas/Session.Message.ID"
+                    },
+                    "parts": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": ["messageID"],
+                  "additionalProperties": false
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": ["sessionID", "targets", "note"],
             "additionalProperties": false
           }
         },
@@ -30758,7 +31016,7 @@
               },
               "source": {
                 "type": "string",
-                "enum": ["title", "compaction", "generate"]
+                "enum": ["title", "compaction", "generate", "trimming"]
               },
               "cost": {
                 "$ref": "#/components/schemas/Money.USD"

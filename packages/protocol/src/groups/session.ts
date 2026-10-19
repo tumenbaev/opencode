@@ -5,6 +5,7 @@ import { Session } from "@opencode/schema/session"
 import { SessionStats } from "@opencode/schema/session-stats"
 import { TokenUsage } from "@opencode/schema/token-usage"
 import { Money } from "@opencode/schema/money"
+import { SessionTrimming } from "@opencode/schema/session-trimming"
 import { InstructionEntry } from "@opencode/schema/instruction-entry"
 import { Project } from "@opencode/schema/project"
 import { DateTimeUtcFromMillis, NonNegativeInt, PositiveInt } from "@opencode/schema/schema"
@@ -457,6 +458,21 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
             "Durably admit a session compaction request. Steers by default: it runs at the next step boundary instead of waiting behind queued prompts.",
         }),
       ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.trim", "/api/session/:sessionID/trim", {
+        params: { sessionID: Session.ID },
+        success: Schema.Struct({ data: SessionTrimming.Result }),
+        error: SessionNotFoundError,
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.trim",
+            summary: "Trim session context",
+            description: "Manually trim session context. Busy sessions return a busy result without changing history.",
+          }),
+        ),
     )
     .add(
       HttpApiEndpoint.post("session.wait", "/api/experimental/session/:sessionID/wait", {

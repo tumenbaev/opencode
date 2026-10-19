@@ -14,6 +14,8 @@ export const kept = (message: SessionMessage.CompactionCompleted) =>
 
 /** One message as the recent, verbatim part of a summary shows it. Empty for messages that part leaves out. */
 export const messageToText = (message: SessionMessage.Info | SessionStored.User): string => {
+  if ("contextReplacement" in message && message.contextReplacement !== undefined)
+    return message.contextReplacement === "" ? "" : `[Assistant]: ${message.contextReplacement}`
   switch (message.type) {
     // Earlier summaries and instruction updates are handled outside the recent part.
     case "compaction":
