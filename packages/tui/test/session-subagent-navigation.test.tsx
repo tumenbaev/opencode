@@ -35,7 +35,7 @@ test("Home and End navigate a subagent transcript", async () => {
   })
   await setup.ready
   expect(
-    await setup.waitForFrame((frame) => frame.includes("Message 19") && frame.includes("Subagents")),
+    await setup.waitForFrame((frame) => frame.includes("Message 19") && frame.includes("No subagents")),
   ).not.toContain("Message 0")
   setup.mockInput.pressKey("HOME")
   expect(await setup.waitForFrame((frame) => frame.includes("Message 0"))).not.toContain("Message 19")

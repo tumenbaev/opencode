@@ -47,6 +47,7 @@ import {
 } from "@opencode/client"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
+import { sessionFamily } from "../../util/session"
 import { FilePath } from "../../ui/file-path"
 import {
   canonicalToolName,
@@ -1438,12 +1439,17 @@ export function Session(props: {
       },
     },
     {
-      title: "Toggle subagent picker",
+      title: "Open first subagent or picker",
       id: "session.child.first",
       group: "Session",
       run: (tab?: string) => {
-        if (tab === "shell" || tab === "subagents") setComposer({ open: true, tab })
-        else if (composer.open || session()?.parentID) setComposer("open", false)
+        if (tab === "shell" || tab === "subagents") {
+          setComposer({ open: true, tab })
+          dialog.clear()
+          return
+        }
+        const first = sessionFamily(data.session.list(), route.sessionID)[0]?.session
+        if (first) navigate({ type: "session", sessionID: first.id })
         else setComposer({ open: true, tab: "subagents" })
         dialog.clear()
       },
@@ -1650,8 +1656,6 @@ export function Session(props: {
                   }
                   setComposer("open", false)
                 }}
-                terminals={props.terminals}
-                visibleTerminalID={props.visibleTerminalID}
               />
               <Switch>
                 <Match when={composerVisible()}>{null}</Match>

@@ -67,7 +67,7 @@ export function TerminalsTab(props: { sessionID: string; visibleTerminalID?: str
 
   return (
     <Show when={composer.active("terminals")}>
-      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5}>
+      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={3}>
         <For each={[...entries(), undefined]}>
           {(terminal, index) => {
             const active = createMemo(() => index() === selected())
