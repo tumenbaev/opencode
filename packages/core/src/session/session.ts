@@ -377,6 +377,7 @@ export const make = Effect.fn("Session.make")(function* () {
   const revert = { stage, clear, commit }
   const operations = {
     get,
+    contextBudgetReached: store.contextBudgetReached,
     message,
     view,
     rename,
@@ -404,6 +405,7 @@ export const make = Effect.fn("Session.make")(function* () {
 
   const forSession = (sessionID: SessionSchema.ID) => {
     const get = operations.get.bind(undefined, sessionID)
+    const contextBudgetReached = operations.contextBudgetReached.bind(undefined, sessionID)
     const message = operations.message.bind(undefined, sessionID)
     const view = operations.view.bind(undefined, sessionID)
     const rename = operations.rename.bind(undefined, sessionID)
@@ -434,6 +436,7 @@ export const make = Effect.fn("Session.make")(function* () {
     return {
       id: sessionID,
       get,
+      contextBudgetReached,
       message,
       view,
       rename,

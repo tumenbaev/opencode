@@ -30,6 +30,7 @@ import { SessionStep } from "./step.js"
 import { ToolOutput } from "../../tool-output.js"
 import { Plugin } from "../../plugin.js"
 import { MAX_STEPS_PROMPT } from "./max-steps.js"
+import CONTEXT_BUDGET_PROMPT from "./prompt/context-budget.txt"
 
 const CONTINUE_AFTER_INCOMPLETE_STREAM =
   "The previous response was interrupted. Continue from where you left off without repeating completed content."
@@ -209,8 +210,36 @@ const layer = Layer.effect(
       let recoverContinuation = true
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
+        let loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
         initial = undefined
+        let contextBudgetThreshold: number | undefined
+        if (loaded.session.parentID) {
+          const reached = yield* store.contextBudgetReached(sessionID)
+          const budget = compaction.budget(loaded)
+          if (!reached && Number.isFinite(budget.ceiling) && budget.ceiling > 0)
+            contextBudgetThreshold = budget.ceiling * 0.8
+          if (reached || (contextBudgetThreshold !== undefined && budget.usage >= contextBudgetThreshold)) {
+            const reminded = loaded.messages.some(
+              (message) => message.type === "synthetic" && message.metadata?.contextBudgetReminder === true,
+            )
+            const reminder = {
+              sessionID,
+              text: CONTEXT_BUDGET_PROMPT,
+              description: "Subagent context budget reached",
+              metadata: { contextBudgetReminder: true },
+            }
+            if (!reached && !reminded)
+              yield* bus.publishAll([
+                [SessionEvent.ContextBudgetReached, { sessionID }],
+                [SessionEvent.Synthetic, reminder],
+              ])
+            else if (!reached) yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID })
+            else if (!reminded) yield* bus.publish(SessionEvent.Synthetic, reminder)
+            contextBudgetThreshold = undefined
+            // A direct synthetic is context, not inbox work: reload without promoting input or resetting steps.
+            if (!reminded) loaded = yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load))
+          }
+        }
         const compacted = yield* compaction.compact({ reason: "auto", context: loaded })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
         if (compacted.status === "completed") {
@@ -245,6 +274,7 @@ const layer = Layer.effect(
           assistantMessageID,
           agent: loaded.agent.id,
           model: loaded.model,
+          contextBudgetThreshold,
           prepared,
           retry: (cause, error, proposed) =>
             retry.decide({

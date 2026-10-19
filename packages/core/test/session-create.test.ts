@@ -104,6 +104,26 @@ function withTmp<A, E, R>(f: (directory: string) => Effect.Effect<A, E, R>) {
 }
 
 describe("Session.create", () => {
+  it.effect("does not inherit the context budget latch into new children", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const bus = yield* Bus.Service
+      const parent = yield* sessions.create({ location, metadata: { thread: "budget-test" } })
+      expect(yield* sessions.contextBudgetReached(parent.id)).toBe(false)
+      yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID: parent.id })
+      expect(yield* sessions.contextBudgetReached(parent.id)).toBe(true)
+      const child = yield* sessions.create({ parentID: parent.id })
+      expect(child.metadata).toEqual(parent.metadata)
+      expect(yield* sessions.contextBudgetReached(child.id)).toBe(false)
+      yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID: child.id })
+      const sibling = yield* sessions.create({ parentID: parent.id })
+      const grandchild = yield* sessions.create({ parentID: child.id })
+      expect(yield* sessions.contextBudgetReached(child.id)).toBe(true)
+      expect(yield* sessions.contextBudgetReached(sibling.id)).toBe(false)
+      expect(yield* sessions.contextBudgetReached(grandchild.id)).toBe(false)
+    }),
+  )
+
   liveIt.live("preserves the project canonical directory when creating a session in another clone", () =>
     withTmp((directory) =>
       Effect.gen(function* () {

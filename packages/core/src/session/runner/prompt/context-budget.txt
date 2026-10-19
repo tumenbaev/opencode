@@ -1,0 +1,3 @@
+Your subagent session has reached its soft context budget. Begin a bounded wrap-up of the current assignment; do not start new scope, broad exploration, or additional delegated work.
+
+Tools remain available for narrowly necessary verification and safe completion of work already in progress. Return verified results and a concise handoff to the parent: what was completed, relevant files or evidence, checks run and their outcomes, unresolved issues, and concrete next steps. Clearly distinguish verified facts from assumptions and unfinished work. If completion is not feasible within a bounded wrap-up, stop with an honest partial-results handoff rather than expanding the task.

@@ -1262,6 +1262,17 @@ export type SessionLogOutput =
             readonly content: ReadonlyArray<SessionMessage.AssistantContentEncoded>
           }
         }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.context.budget.reached"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: { readonly sessionID: Session.ID }
+        }
     )
   | EventLog.Synced
 export type SessionLogOperation<E = never> = (input: SessionLogInput) => Stream.Stream<SessionLogOutput, E>

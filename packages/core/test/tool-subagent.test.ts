@@ -30,6 +30,7 @@ import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStore } from "@opencode/core/session/store"
 import { SubagentJob } from "@opencode/core/session/subagent-job"
+import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
@@ -98,6 +99,8 @@ const executionNode = makeGlobalNode({
           cost: Money.USD.zero,
           tokens,
         })
+        if ((yield* store.get(sessionID))?.title?.includes("budget"))
+          yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID })
       })
       return SessionExecution.Service.of({
         maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
@@ -209,6 +212,116 @@ const withSubagent = (location: Location.Ref) =>
   })
 
 describe("SubagentTool", () => {
+  it.live("guards exhausted reuse without blocking fresh children or already admitted work", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const bus = yield* Bus.Service
+          const jobs = yield* Job.Service
+          const parent = yield* sessions.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(dir.path) }),
+            model: parentModel,
+          })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const child = yield* sessions.create({
+            parentID: parent.id,
+            agent: Agent.ID.make("fallback"),
+            model: parentModel,
+          })
+          yield* sessions.prompt({ sessionID: child.id, text: "already admitted", resume: false })
+          const inbox = yield* sessions.inbox(child.id)
+          yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID: child.id })
+          const progress: Tool.Metadata[] = []
+          const call = (sessionID?: Session.ID) =>
+            executeTool(registry, {
+              sessionID: parent.id,
+              ...toolIdentity,
+              progress: (update) => Effect.sync(() => progress.push(update)),
+              call: {
+                type: "tool-call" as const,
+                id: "call-budget",
+                name: SubagentTool.name,
+                input: {
+                  agent: "reviewer",
+                  description: "budget review",
+                  prompt: "review",
+                  ...(sessionID === undefined ? {} : { sessionID }),
+                },
+              },
+            })
+          expect(yield* call(child.id)).toEqual({
+            status: "error",
+            error: { type: "tool.execution", message: SubagentCompletion.CONTEXT_BUDGET_NOTICE },
+          })
+          expect(progress).toEqual([])
+          expect(yield* sessions.inbox(child.id)).toEqual(inbox)
+          expect(yield* sessions.get(child.id)).toMatchObject({ agent: "fallback", model: parentModel })
+          expect(yield* jobs.get(child.id)).toBeUndefined()
+          // The latch does not cut off direct prompts or work admitted before it was set.
+          yield* sessions.prompt({ sessionID: child.id, text: "direct user prompt", resume: false })
+          yield* SessionExecution.Service.use((execution) => execution.resume(child.id))
+          expect(
+            SubagentCompletion.text(
+              (yield* sessions.context(child.id)).findLast((message) => message.type === "assistant"),
+            ),
+          ).toBe(childText)
+
+          const fresh = yield* call()
+          const freshID = outputSessionID(fresh.metadata)
+          expect(freshID).not.toBe(child.id)
+          expect(fresh.content).toEqual([
+            {
+              type: "text",
+              text: `<subagent sessionID="${freshID}" state="completed">\n${childText}\n\n${SubagentCompletion.CONTEXT_BUDGET_NOTICE}\n</subagent>`,
+            },
+          ])
+          expect(
+            SubagentCompletion.text(
+              (yield* sessions.context(freshID)).findLast((message) => message.type === "assistant"),
+            ),
+          ).toBe(childText)
+          expect((yield* jobs.get(freshID))?.output).toBe(childText)
+          // Restart delivery uses this same formatter, including resume:false.
+          for (const resume of [true, false]) {
+            const delivered: string[] = []
+            yield* SubagentCompletion.deliver(
+              {
+                contextBudgetReached: sessions.contextBudgetReached,
+                synthetic: (input) =>
+                  Effect.gen(function* () {
+                    delivered.push(input.text)
+                    return yield* sessions.synthetic(input)
+                  }),
+              },
+              { completeBackground: () => Effect.void },
+              {
+                status: "completed",
+                output: childText,
+                resume,
+                recovery: {
+                  kind: "subagent",
+                  parentSessionID: parent.id,
+                  childSessionID: freshID,
+                  agent: "reviewer",
+                  description: "budget review",
+                },
+              },
+            )
+            expect(delivered).toEqual([
+              `<subagent sessionID="${freshID}" state="completed" description="budget review">\n${childText}\n\n${SubagentCompletion.CONTEXT_BUDGET_NOTICE}\n</subagent>`,
+            ])
+          }
+        }),
+      ),
+    ),
+  )
+
   completionIt.live("admits one durable completion across live delivery and restart replay", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
@@ -835,7 +948,7 @@ describe("SubagentTool", () => {
               type: "tool-call",
               id: "call-background-subagent",
               name: SubagentTool.name,
-              input: { agent: "reviewer", description: "background review", prompt: "review", background: true },
+              input: { agent: "reviewer", description: "budget review", prompt: "review", background: true },
             },
           })
           const childID = outputSessionID(settled.metadata)
@@ -850,7 +963,7 @@ describe("SubagentTool", () => {
           if (admission?.data.item.type !== "synthetic") return yield* Effect.die("Expected synthetic inbox item")
           expect(admission?.data.item.payload.text).toContain(`<subagent sessionID="${childID}" state="completed"`)
           expect(admission?.data.item.payload).toMatchObject({
-            description: "background review",
+            description: "budget review",
             metadata: {
               source: "subagent",
               childID,
@@ -864,6 +977,7 @@ describe("SubagentTool", () => {
           expect(synthetic).toHaveLength(1)
           expect(synthetic[0]?.text).toContain(`<subagent sessionID="${childID}" state="completed"`)
           expect(synthetic[0]?.text).toContain(childText)
+          expect(synthetic[0]?.text).toContain(`\n\n${SubagentCompletion.CONTEXT_BUDGET_NOTICE}\n</subagent>`)
         }),
       ),
     ),

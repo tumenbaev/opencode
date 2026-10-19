@@ -63,6 +63,8 @@ export type Outcome =
   | { readonly status: "failed"; readonly error: SessionError.Error }
 
 export interface Interface extends State.Transformable<Editor> {
+  /** The current context estimate and configured compaction ceiling, even when auto compaction is disabled. */
+  readonly budget: (context: SessionContext.Loaded) => { readonly usage: number; readonly ceiling: number }
   readonly compact: (trigger: Trigger) => Effect.Effect<Outcome>
 }
 
@@ -676,6 +678,10 @@ export const layer = Layer.effect(
     return Service.of({
       transform: state.transform,
       reload: state.reload,
+      budget: (context) => ({
+        usage: estimateContext(context),
+        ceiling: calculateCeiling(context.model.limit, state.get().buffer),
+      }),
       // A manual compaction settles through its `/compact` inbox item, which the runner owns.
       compact: (trigger) =>
         compact(trigger).pipe(

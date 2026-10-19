@@ -4,8 +4,19 @@ import { Effect } from "effect"
 import type { Job } from "../job.js"
 import type { Session } from "../session.js"
 import type { SessionMessage } from "./message.js"
+import type { SessionSchema } from "./schema.js"
 
 export const NO_TEXT = "Subagent completed without a text response."
+export const CONTEXT_BUDGET_NOTICE =
+  "This worker reached its context budget and is no longer available for task follow-ups."
+
+export const withContextBudgetNotice = Effect.fnUntraced(function* (
+  sessions: Pick<Session.Interface, "contextBudgetReached">,
+  sessionID: SessionSchema.ID,
+  text: string,
+) {
+  return (yield* sessions.contextBudgetReached(sessionID)) ? `${text}\n\n${CONTEXT_BUDGET_NOTICE}` : text
+})
 
 export function text(message: SessionMessage.Info | undefined) {
   if (message?.type !== "assistant") return NO_TEXT
@@ -19,7 +30,7 @@ export function text(message: SessionMessage.Info | undefined) {
 }
 
 export const deliver = Effect.fnUntraced(function* (
-  sessions: Pick<Session.Interface, "synthetic">,
+  sessions: Pick<Session.Interface, "synthetic" | "contextBudgetReached">,
   jobs: Pick<Job.Interface, "completeBackground">,
   input: Pick<Job.Info, "status" | "output" | "error" | "notificationID"> & {
     recovery: Extract<Job.Recovery, { kind: "subagent" }>
@@ -34,12 +45,13 @@ export const deliver = Effect.fnUntraced(function* (
       : input.status === "error"
         ? (input.error ?? "Subagent failed")
         : "Subagent cancelled"
+  const output = yield* withContextBudgetNotice(sessions, recovery.childSessionID, text)
   yield* sessions.synthetic({
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,
     ...(input.resume === false ? { resume: false } : {}),
     description: recovery.description,
-    text: `<subagent sessionID="${recovery.childSessionID}" state="${input.status}" description="${recovery.description}">\n${text}\n</subagent>`,
+    text: `<subagent sessionID="${recovery.childSessionID}" state="${input.status}" description="${recovery.description}">\n${output}\n</subagent>`,
     metadata: { source: "subagent", childID: recovery.childSessionID, agent: recovery.agent, state: input.status },
   })
   if (input.notificationID) yield* jobs.completeBackground(input.notificationID)

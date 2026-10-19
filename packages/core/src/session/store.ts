@@ -52,6 +52,7 @@ export type MessagesInput = {
 }
 
 export interface Interface {
+  readonly contextBudgetReached: (sessionID: Session.ID) => Effect.Effect<boolean>
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
@@ -93,6 +94,15 @@ const layer = Layer.effect(
     const { db } = yield* Database.Service
 
     return Service.of({
+      contextBudgetReached: Effect.fn("SessionStore.contextBudgetReached")(function* (sessionID) {
+        const row = yield* db
+          .select({ reached: SessionTable.context_budget_reached })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        return row?.reached ?? false
+      }),
       get: Effect.fnUntraced(function* (sessionID) {
         const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
         return row ? fromRow(row) : undefined

@@ -115,6 +115,7 @@ describe("public event manifest", () => {
         "session.unarchived.1",
         "session.message.content.updated.1",
         "session.context.trimmed.1",
+        "session.context.budget.reached.1",
         "session.usage.recorded.1",
         "session.forked.2",
         "session.inbox.delivered.1",
@@ -157,8 +158,14 @@ describe("public event manifest", () => {
       ...SessionEvent.Definitions.filter((definition) => definition.durability === "durable"),
       SessionEvent.UsageRecorded,
       SessionEvent.MessageContentUpdated,
+      SessionEvent.ContextBudgetReached,
     ])
     expect(SessionEvent.UsageRecorded.durability).toBe("durable")
+    expect(EventManifest.Durable.get("session.context.budget.reached.1")).toBe(SessionEvent.ContextBudgetReached)
+    expect(SessionEvent.Definitions).not.toContain(SessionEvent.ContextBudgetReached)
+    expect(EventManifest.Definitions).not.toContain(SessionEvent.ContextBudgetReached)
+    expect(EventManifest.ServerDefinitions).not.toContain(SessionEvent.ContextBudgetReached)
+    expect(EventManifest.Latest.has("session.context.budget.reached")).toBe(false)
     expect(EventManifest.Durable.get("session.usage.recorded.1")).toBe(SessionEvent.UsageRecorded)
     expect(SessionEvent.Definitions).not.toContain(SessionEvent.UsageRecorded)
     expect(EventManifest.Definitions).not.toContain(SessionEvent.UsageRecorded)

@@ -83,6 +83,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
       "session.viewed": () => Effect.void,
       "session.archived": () => Effect.void,
       "session.unarchived": () => Effect.void,
+      "session.context.budget.reached": () => Effect.void,
       // Applied across standalone and assistant rows by SessionProjector.
       "session.context.trimmed": () => Effect.void,
       "session.message.content.updated": (event) =>

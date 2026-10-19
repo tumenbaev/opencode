@@ -1,7 +1,10 @@
 import { describe, expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
+import { asc, eq } from "drizzle-orm"
+import path from "path"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
+import { EventTable } from "@opencode/core/event/sql"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { SessionProjector } from "@opencode/core/session/projector"
@@ -14,6 +17,7 @@ import { SessionEvent } from "@opencode/schema/session-event"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { testEffect } from "./lib/effect"
+import { tmpdirScoped } from "./fixture/tmpdir"
 
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node]), [
@@ -51,6 +55,66 @@ const seedSessions = (rows: { id: string; updated: number }[]) =>
   })
 
 describe("SessionStore", () => {
+  it.live("persists and replays the context budget latch without changing public info or history", () =>
+    Effect.gen(function* () {
+      const sessionID = Session.ID.make("ses_budget")
+      const bus = yield* seedSessions([{ id: sessionID, updated: 20 }])
+      const store = yield* SessionStore.Service
+      const db = (yield* Database.Service).db
+      expect(yield* store.contextBudgetReached(Session.ID.make("ses_missing"))).toBe(false)
+      expect(yield* store.contextBudgetReached(sessionID)).toBe(false)
+      const before = yield* store.get(sessionID)
+      yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID })
+      yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID })
+      expect(yield* store.contextBudgetReached(sessionID)).toBe(true)
+      expect(yield* store.get(sessionID)).toEqual(before)
+      expect(yield* store.messages({ sessionID })).toEqual([])
+
+      const events = (yield* db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, sessionID))
+        .orderBy(asc(EventTable.seq))
+        .all()).map((event) => ({
+        id: event.id,
+        created: event.created,
+        aggregateID: event.aggregate_id,
+        seq: event.seq,
+        type: event.type,
+        data: event.data,
+      }))
+      expect(events.filter((event) => event.type === "session.context.budget.reached.1")).toHaveLength(2)
+      const tmp = yield* tmpdirScoped()
+      const target = AppNodeBuilder.build(
+        LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node]),
+        [
+          Database.node.replace(Database.configured({ path: path.join(tmp.path, "budget.sqlite") })),
+          Bus.node.replace(Bus.configured({ persist: true })),
+        ],
+      )
+      yield* Effect.gen(function* () {
+        const db = (yield* Database.Service).db
+        const bus = yield* Bus.Service
+        const store = yield* SessionStore.Service
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+          .run()
+        yield* Effect.forEach(events, (event) => bus.replay(event), { discard: true })
+        yield* Effect.forEach(events, (event) => bus.replay(event), { discard: true })
+        expect(yield* store.contextBudgetReached(sessionID)).toBe(true)
+        expect(yield* store.get(sessionID)).toEqual(before)
+        expect(yield* store.messages({ sessionID })).toEqual([])
+      }).pipe(Effect.provide(Layer.fresh(target)))
+
+      // Reopen the projected database with fresh services, without replaying again.
+      yield* Effect.gen(function* () {
+        const store = yield* SessionStore.Service
+        expect(yield* store.contextBudgetReached(sessionID)).toBe(true)
+      }).pipe(Effect.provide(Layer.fresh(target)))
+    }),
+  )
+
   it.effect("lists by updated time and ID with exclusive two-item pages in either direction", () =>
     Effect.gen(function* () {
       yield* seedSessions([

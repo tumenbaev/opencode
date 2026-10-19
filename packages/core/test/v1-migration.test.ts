@@ -48,6 +48,7 @@ const session = (
   summary_files: null,
   summary_diffs: null,
   metadata: null,
+  context_budget_reached: false,
   cost: 99,
   tokens_input: 99,
   tokens_output: 99,

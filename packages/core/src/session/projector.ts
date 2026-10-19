@@ -675,6 +675,14 @@ const layer = Layer.effectDiscard(
     )
     yield* bus.project(SessionEvent.MessageContentUpdated, (event) => run(db, event))
     yield* bus.project(SessionEvent.ContextTrimmed, (event) => run(db, event))
+    yield* bus.project(SessionEvent.ContextBudgetReached, (event) =>
+      db
+        .update(SessionTable)
+        .set({ context_budget_reached: true, time_updated: sql`${SessionTable.time_updated}` })
+        .where(eq(SessionTable.id, event.data.sessionID))
+        .run()
+        .pipe(Effect.orDie),
+    )
     yield* bus.project(SessionEvent.UsageRecorded, (event) => applyUsage(db, event.data.sessionID, event.data))
     yield* bus.project(SessionEvent.Forked, (event) => projectFork(db, event))
     yield* bus.project(SessionEvent.InboxDelivered, (event) =>

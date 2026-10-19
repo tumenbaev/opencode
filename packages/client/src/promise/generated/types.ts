@@ -1508,6 +1508,16 @@ export type SessionUsageRecorded = {
   data: { sessionID: SessionID; source: "title" | "compaction" | "trimming"; cost: MoneyUSD; tokens: TokenUsageInfo }
 }
 
+export type SessionContextBudgetReached = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.context.budget.reached"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID }
+}
+
 export type LocationShutdown = {
   id: EventID
   created: number
@@ -2602,6 +2612,7 @@ export type SessionEventDurable =
   | SessionRevertCommitted
   | SessionUsageRecorded
   | SessionMessageContentUpdated
+  | SessionContextBudgetReached
 
 export type IntegrationInfo = {
   id: IntegrationID
