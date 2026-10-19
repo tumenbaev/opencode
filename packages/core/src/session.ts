@@ -125,6 +125,7 @@ export { DestinationNotFoundError, DestinationNotDirectoryError, DestinationUnav
 export { TurnRangeError }
 
 export interface Interface {
+  readonly contextBudgetReached: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
   /** A cursor carries the filters of the request that produced it, so filters passed with a cursor are ignored. */
   readonly list: (input?: ListFilter & { readonly limit?: number; readonly cursor?: ListCursor }) => Effect.Effect<
     {
@@ -397,6 +398,7 @@ const layer = Layer.effect(
         return forked
       }),
       get: (sessionID) => sessions.forSession(sessionID).get(),
+      contextBudgetReached: (sessionID) => sessions.forSession(sessionID).contextBudgetReached(),
       environment: Effect.fn("Session.environment")(function* (input) {
         yield* result.get(input.sessionID)
         if (input.variables !== undefined) yield* environments.set(input.sessionID, input.variables)

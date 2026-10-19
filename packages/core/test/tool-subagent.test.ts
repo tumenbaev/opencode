@@ -25,12 +25,14 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Session } from "@opencode/core/session"
 import { SessionEvent } from "@opencode/core/session/event"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { SubagentReport } from "@opencode/core/session/execution/subagent-report"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStore } from "@opencode/core/session/store"
 import { SubagentJob } from "@opencode/core/session/subagent-job"
+import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
@@ -101,6 +103,8 @@ const executionNode = makeGlobalNode({
           cost: Money.USD.zero,
           tokens,
         })
+        if ((yield* store.get(sessionID))?.title?.includes("budget"))
+          yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID })
       })
       return SessionExecution.Service.of({
         maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
@@ -223,6 +227,101 @@ const withSubagent = (location: Location.Ref) =>
   })
 
 describe("SubagentTool", () => {
+  it.live("guards exhausted reuse without blocking fresh children or already admitted work", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const bus = yield* Bus.Service
+          const jobs = yield* Job.Service
+          const parent = yield* sessions.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(dir.path) }),
+            model: parentModel,
+          })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const child = yield* sessions.create({
+            parentID: parent.id,
+            agent: Agent.ID.make("fallback"),
+            model: parentModel,
+          })
+          yield* sessions.prompt({ sessionID: child.id, text: "already admitted", resume: false })
+          const inbox = yield* sessions.inbox(child.id)
+          yield* bus.publish(SessionEvent.ContextBudgetReached, { sessionID: child.id })
+          const progress: Tool.Metadata[] = []
+          const call = (sessionID?: Session.ID) =>
+            executeTool(registry, {
+              sessionID: parent.id,
+              ...toolIdentity,
+              progress: (update) => Effect.sync(() => progress.push(update)),
+              call: {
+                type: "tool-call" as const,
+                id: "call-budget",
+                name: SubagentTool.name,
+                input: {
+                  agent: "reviewer",
+                  description: "budget review",
+                  prompt: "review",
+                  ...(sessionID === undefined ? {} : { sessionID }),
+                },
+              },
+            })
+          expect(yield* call(child.id)).toEqual({
+            status: "error",
+            error: { type: "tool.execution", message: SubagentCompletion.CONTEXT_BUDGET_NOTICE },
+          })
+          expect(progress).toEqual([])
+          expect(yield* sessions.inbox(child.id)).toEqual(inbox)
+          expect(yield* sessions.get(child.id)).toMatchObject({ agent: "fallback", model: parentModel })
+          expect(yield* jobs.get(child.id)).toBeUndefined()
+          // The latch does not cut off direct prompts or work admitted before it was set.
+          yield* sessions.prompt({ sessionID: child.id, text: "direct user prompt", resume: false })
+          yield* SessionExecution.Service.use((execution) => execution.resume(child.id))
+          expect(
+            SubagentCompletion.text(
+              (yield* sessions.context(child.id)).findLast((message) => message.type === "assistant"),
+            ),
+          ).toBe(childText)
+
+          const fresh = yield* call()
+          const freshID = outputSessionID(fresh.metadata)
+          expect(freshID).not.toBe(child.id)
+          expect(fresh).toMatchObject({ status: "completed", output: { status: "running" } })
+
+          const store = yield* SessionStore.Service
+          const delivered: string[] = []
+          const report = SubagentReport.make({
+            store,
+            jobs,
+            inbox: {
+              admit: (request) => Effect.sync(() => {
+                if (request.item.type === "synthetic") delivered.push(request.item.payload.text)
+              }),
+            },
+            draining: Effect.succeed(new Set()),
+            wake: () => Effect.void,
+          })
+          report.started(child.id, { startedSeq: 0 })
+          const settlement = yield* report.prepare(child.id, { type: "succeeded" })
+          yield* settlement.commit()
+          const marker = (yield* jobs.pendingBackground).find((item) => item.id === child.id)
+          expect(marker?.output).toBe(`${childText}\n\n${SubagentCompletion.CONTEXT_BUDGET_NOTICE}`)
+          yield* settlement.deliver
+          expect(delivered).toEqual([expect.stringContaining(marker?.output ?? "missing report")])
+          if (!marker || marker.recovery.kind !== "subagent") return yield* Effect.die("Expected subagent report")
+          const replayed: string[] = []
+          yield* SubagentCompletion.deliver(
+            { synthetic: (input) => Effect.sync(() => void replayed.push(input.text)) },
+            { completeBackground: () => Effect.void },
+            { ...marker, recovery: marker.recovery },
+          )
+          expect(replayed).toEqual(delivered)
+        }),
+      ),
+    ),
+  )
+
   completionIt.live("admits one durable completion across live delivery and restart replay", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>
@@ -854,7 +953,9 @@ describe("SubagentTool", () => {
 
           const fallback = yield* call("call-fallback-override", { agent: "fallback", model: "not-a-ref" })
           expect(fallback).toMatchObject({ status: "completed", output: { status: "running" } })
-          expect((yield* sessions.get(outputSessionID(fallback.metadata))).model).toEqual(parentModel)
+          expect((yield* sessions.get(outputSessionID(fallback.metadata))).model).toEqual(
+            (yield* sessions.get(parent.id)).model,
+          )
         }),
       ),
     ),
@@ -1058,6 +1159,7 @@ describe("SubagentJob cancellation", () => {
       const execution = SessionExecution.Service.of({
         active: Effect.succeed(new Set<Session.ID>()),
         isActive: () => Effect.succeed(false),
+        maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
         resume: (sessionID) =>
           Effect.sync(() => claimed.add(sessionID)).pipe(
             Effect.andThen(

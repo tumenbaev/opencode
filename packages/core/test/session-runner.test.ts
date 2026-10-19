@@ -2492,17 +2492,17 @@ describe("SessionRunnerLLM", () => {
       request?.system.map((part) => part.text).find((text) => text.includes("# Code Mode")) ?? ""
     const updates = (request: LLMRequest | undefined) =>
       request ? systemTexts(request).filter((text) => text.startsWith("The Code Mode tool catalog has changed")) : []
-    const signature = (name: string, index: number) =>
-      `  - tools.${name}.${name}_${index}({\n  id: string,\n}): Promise<string> // ${name} tool ${index}`
+    const listing = (name: string, index: number) => `- ${name}.${name}_${index}`
 
     yield* register("alpha", 12)
     yield* s.runPrompt("First")
-    expect(catalogOf(s.requests.at(-1))).toContain(`- alpha (12 tools)\n${signature("alpha", 0)}`)
+    expect(catalogOf(s.requests.at(-1))).toContain(listing("alpha", 0))
+    expect(catalogOf(s.requests.at(-1))).not.toContain("Promise<string>")
 
     const beta = yield* register("beta", 1)
     yield* s.runPrompt("Second")
     expect(updates(s.requests.at(-1))).toEqual([
-      `The Code Mode tool catalog has changed.\n\nNew tools are available:\n- beta (1 tool)\n${signature("beta", 0)}`,
+      `The Code Mode tool catalog has changed.\n\nNew tools are available in addition to those previously listed:\n${listing("beta", 0)}`,
     ])
     // The next step rebuilds the same catalog and has nothing to say.
     yield* s.runPrompt("Again")
@@ -2511,13 +2511,13 @@ describe("SessionRunnerLLM", () => {
     yield* Scope.close(beta, Exit.void)
     yield* s.runPrompt("Third")
     expect(updates(s.requests.at(-1)).at(-1)).toBe(
-      "The Code Mode tool catalog has changed.\n\nThe following tool namespaces are no longer available and must not be used: `beta`.",
+      "The Code Mode tool catalog has changed.\n\nThe following tools are no longer available and must not be called: tools.beta.beta_0.",
     )
 
     yield* register("alpha", 1, 12)
     yield* s.runPrompt("Fourth")
     expect(updates(s.requests.at(-1)).at(-1)).toBe(
-      `The Code Mode tool catalog has changed.\n\nNew tools are available in addition to those previously listed:\n${signature("alpha", 12)}`,
+      `The Code Mode tool catalog has changed.\n\nNew tools are available in addition to those previously listed:\n${listing("alpha", 12)}`,
     )
 
     // Compaction restates the current catalog as the new baseline and has no update to send.
@@ -2525,7 +2525,7 @@ describe("SessionRunnerLLM", () => {
     yield* s.session.compact({ sessionID })
     yield* s.resume
     const latest = yield* s.runPrompt("Fifth")
-    expect(catalogOf(s.requests.at(-1))).toContain(signature("alpha", 12))
+    expect(catalogOf(s.requests.at(-1))).toContain(listing("alpha", 12))
     expect(catalogOf(s.requests.at(-1))).not.toContain("- beta")
     expect(updates(s.requests.at(-1))).toEqual([])
 
@@ -2533,7 +2533,7 @@ describe("SessionRunnerLLM", () => {
     const forked = yield* s.session.fork({ sessionID, before: latest.id })
     yield* s.session.prompt({ sessionID: forked.id, text: "Forked", resume: false })
     yield* s.session.resume(forked.id)
-    expect(catalogOf(s.requests.at(-1))).toContain(signature("alpha", 12))
+    expect(catalogOf(s.requests.at(-1))).toContain(listing("alpha", 12))
     expect(updates(s.requests.at(-1))).toEqual([])
   })
 
@@ -3782,6 +3782,146 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(1)
     expect(userTexts(s.requests[0])).toContain("Continue")
     expect(yield* s.context).not.toContainEqual(expect.objectContaining({ type: "compaction" }))
+  })
+
+  for (const example of [
+    { child: false, usage: 136_000, reached: false, unknown: false },
+    { child: true, usage: 135_999, reached: false, unknown: false },
+    { child: true, usage: 136_000, reached: true, unknown: false },
+    { child: true, usage: 1_000_000, reached: false, unknown: true },
+  ]) {
+    scenario(`child context budget final response ${JSON.stringify(example)}`, function* (s) {
+      if (example.child)
+        yield* s.db
+          .update(SessionTable)
+          .set({ parent_id: otherSessionID })
+          .where(eq(SessionTable.id, sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      if (example.unknown) s.currentModel = unknownContextModel
+      yield* s.llm.push(TestLLM.textWithUsage("Completed assignment", "budget-final", example.usage))
+      yield* s.runPrompt("Finish this assignment")
+
+      expect(yield* s.session.contextBudgetReached(sessionID)).toBe(example.reached)
+      expect(s.requests).toHaveLength(1)
+      expect((yield* s.messages).some((message) => message.metadata?.contextBudgetReminder === true)).toBe(false)
+    })
+  }
+
+  scenario(
+    "child context budget reminds once, allows tools, and keeps the step allowance across replay",
+    function* (s) {
+      yield* s.db
+        .update(SessionTable)
+        .set({ parent_id: otherSessionID })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie)
+      const agents = yield* Agent.Service
+      yield* agents.transform((editor) =>
+        editor.update(Agent.ID.make("build"), (agent) => {
+          agent.steps = 3
+        }),
+      )
+      yield* s.llm.push(
+        TestLLM.complete(
+          {
+            reason: { normalized: "tool-calls" },
+            usage: {
+              inputTokens: 143_998,
+              nonCachedInputTokens: 143_993,
+              cacheReadInputTokens: 3,
+              cacheWriteInputTokens: 2,
+              outputTokens: 2,
+              reasoningTokens: 1,
+            },
+          },
+          LLMEvent.toolCall({ id: "budget-first", name: "echo", input: { text: "first" } }),
+        ),
+        TestLLM.toolCall("budget-verify", "echo", { text: "verified" }),
+        TestLLM.text("Verified handoff", "budget-handoff"),
+      )
+      yield* s.runPrompt("Complete and verify")
+
+      expect(yield* s.session.contextBudgetReached(sessionID)).toBe(true)
+      expect(s.requests).toHaveLength(3)
+      expect(s.executions).toEqual(["first", "verified"])
+      const reminder = "Your subagent session has reached its soft context budget."
+      expect(userTexts(s.requests[0]).join("\n")).not.toContain(reminder)
+      expect(userTexts(s.requests[1]).at(-1)).toStartWith(reminder)
+      expect(messageRoles(s.requests[1])?.slice(-2)).toEqual(["tool", "user"])
+      expect(s.requests[1]?.system).toEqual(s.requests[0]?.system)
+      expect(s.requests[1]?.toolChoice).toBeUndefined()
+      expect(s.requests[1]?.tools.map((tool) => tool.name)).toContain("echo")
+      expect(s.requests[2]?.toolChoice).toMatchObject({ type: "none" })
+      expect((yield* s.messages).filter((message) => message.metadata?.contextBudgetReminder === true)).toHaveLength(1)
+      expect(
+        (yield* recordedEventTypes(sessionID)).filter((type) => type === "session.context.budget.reached.1"),
+      ).toHaveLength(1)
+
+      yield* replaySessionProjection(sessionID)
+      yield* s.llm.push(TestLLM.text("Direct user interaction is allowed", "budget-direct"))
+      yield* s.runPrompt("A direct user follow-up")
+      expect((yield* s.messages).filter((message) => message.metadata?.contextBudgetReminder === true)).toHaveLength(1)
+      expect(userTexts(s.requests[3]).filter((text) => text.startsWith(reminder))).toHaveLength(1)
+    },
+  )
+
+  scenario(
+    "child context budget includes new tool output with a custom buffer and auto compaction disabled",
+    function* (s) {
+      yield* s.db
+        .update(SessionTable)
+        .set({ parent_id: otherSessionID })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie)
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.transform((editor) => editor.configure({ buffer: 40_000, auto: false }))
+      // 80% of the configured 160k ceiling is 128k. Provider usage is just below it;
+      // the tool result, unseen by the provider, pushes the next context estimate over it.
+      yield* s.llm.push(
+        TestLLM.complete(
+          { reason: { normalized: "tool-calls" }, usage: { inputTokens: 127_999, nonCachedInputTokens: 127_999 } },
+          LLMEvent.toolCall({ id: "budget-growth", name: "echo", input: { text: "x".repeat(4_000) } }),
+        ),
+        TestLLM.text("Bounded handoff", "budget-growth-final"),
+      )
+      yield* s.runPrompt("Inspect the result and finish")
+
+      expect(yield* s.session.contextBudgetReached(sessionID)).toBe(true)
+      expect(s.requests).toHaveLength(2)
+      expect(userTexts(s.requests[1]).at(-1)).toStartWith("Your subagent session has reached its soft context budget.")
+      expect((yield* s.context).some((message) => message.type === "compaction")).toBe(false)
+    },
+  )
+
+  scenario("child context budget allows follow-ups already pending when the latch is set", function* (s) {
+    yield* s.db
+      .update(SessionTable)
+      .set({ parent_id: otherSessionID })
+      .where(eq(SessionTable.id, sessionID))
+      .run()
+      .pipe(Effect.orDie)
+    yield* s.admit("Current assignment")
+    yield* s.llm.push(
+      TestLLM.textWithUsage("Current work done", "budget-current", 144_000),
+      TestLLM.text("Accepted follow-up done", "budget-pending"),
+    )
+    const running = yield* s.resumePaused
+    const pending = yield* s.session.prompt({
+      sessionID,
+      text: "Already accepted follow-up",
+      delivery: "queue",
+      resume: false,
+    })
+    yield* running.finish
+
+    expect(yield* s.session.contextBudgetReached(sessionID)).toBe(true)
+    expect(s.requests).toHaveLength(2)
+    expect(userTexts(s.requests[1])).toContain("Already accepted follow-up")
+    expect((yield* s.messages).some((message) => message.id === pending.id)).toBe(true)
+    expect(yield* s.inbox).toEqual([])
   })
 
   scenario("stops after required automatic compaction fails", function* (s) {

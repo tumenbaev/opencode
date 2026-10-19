@@ -181,7 +181,7 @@ describe("Tool", () => {
       ).toBe("Unknown or unavailable tool.")
       const result = yield* run("execute", { code: 'return await tools["123"].acme["tool-name"]({ text: "hello" })' })
       expect(result.output).toMatchObject({
-        output: '{\n  "text": "hello"\n}',
+        output: '{"text":"hello"}',
         toolCalls: [{ tool: "123.acme.tool-name", status: "completed" }],
       })
       expect(executed).toBe(1)
@@ -264,7 +264,7 @@ describe("Tool", () => {
           },
         })).output,
       ).toMatchObject({
-        output: '{\n  "text": "hello"\n}',
+        output: '{"text":"hello"}',
         toolCalls: [{ tool: "echo", status: "completed" }],
       })
     }),

@@ -174,6 +174,14 @@ export const ContextTrimmed = Event.durable({
 })
 export type ContextTrimmed = typeof ContextTrimmed.Type
 
+/** Internal, monotone latch for a session's soft context budget. */
+export const ContextBudgetReached = Event.durable({
+  type: "session.context.budget.reached",
+  ...options,
+  schema: Base,
+})
+export type ContextBudgetReached = typeof ContextBudgetReached.Type
+
 export const UsageRecorded = Event.durable({
   type: "session.usage.recorded",
   ...options,
@@ -740,6 +748,7 @@ export const DurableDefinitions = Event.inventory(
   ...Definitions.filter((definition) => definition.durability === "durable"),
   UsageRecorded,
   MessageContentUpdated,
+  ContextBudgetReached,
 )
 export const EphemeralDefinitions = Event.inventory(
   ...Definitions.filter((definition) => definition.durability === "ephemeral"),

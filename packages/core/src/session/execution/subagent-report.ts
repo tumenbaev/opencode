@@ -21,7 +21,7 @@ export type Period = {
 }
 
 export type Deps = {
-  readonly store: Pick<SessionStore.Interface, "get" | "lastAssistantAfter" | "release">
+  readonly store: Pick<SessionStore.Interface, "get" | "lastAssistantAfter" | "release" | "contextBudgetReached">
   readonly jobs: Job.Interface
   readonly inbox: Inbox
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
@@ -166,6 +166,9 @@ export const make = (deps: Deps) => {
         }
         const resolved = yield* resolveBody(sessionID, outcome, period?.startedSeq, jobState.mode)
         if (!resolved) return
+        const body = (yield* deps.store.contextBudgetReached(child.id))
+          ? `${resolved.body}\n\n${SubagentCompletion.CONTEXT_BUDGET_NOTICE}`
+          : resolved.body
         const recovery =
           jobState.mode === "background"
             ? jobState.recovery
@@ -180,7 +183,7 @@ export const make = (deps: Deps) => {
           notificationID: jobState.mode === "background" ? jobState.notificationID : SessionMessage.ID.create(),
           recovery: { ...recovery, outstanding: running },
           status: resolved.status,
-          ...(resolved.status === "completed" ? { output: resolved.body } : { error: resolved.body }),
+          ...(resolved.status === "completed" ? { output: body } : { error: body }),
           ...(jobState.mode === "background" ? { startedAt: jobState.startedAt } : {}),
         }
         yield* deps.jobs.recordSubagentReport(report)

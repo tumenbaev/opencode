@@ -40,7 +40,7 @@ describe("CodeModeCatalog", () => {
   test("does not render signatures even for large inventories or lookups", () => {
     const tools = Array.from({ length: 10_000 }, (_, index): CodeModeCatalog.Tool => ({
       ...entry(`bulk.tool${index}`),
-      get signature() {
+      get signature(): string {
         throw new Error("signature should not be rendered")
       },
     }))

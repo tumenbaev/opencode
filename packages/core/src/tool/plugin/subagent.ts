@@ -11,6 +11,7 @@ import { Model } from "../../model.js"
 import { Permission } from "../../permission.js"
 import { Session } from "../../session.js"
 import { SessionSchema } from "../../session/schema.js"
+import { SubagentCompletion } from "../../session/subagent-completion.js"
 import { SubagentDepth } from "../../session/subagent-depth.js"
 import { SubagentJob } from "../../session/subagent-job.js"
 
@@ -147,6 +148,8 @@ export const Plugin = {
                 return yield* new ToolFailure({
                   message: `Session ${existing.id} is not a child of the current session`,
                 })
+              if (existing !== undefined && (yield* sessions.contextBudgetReached(existing.id)))
+                return yield* new ToolFailure({ message: SubagentCompletion.CONTEXT_BUDGET_NOTICE })
               const override: Model.Ref | undefined = undefined // Subagent model overrides are disabled.
               // Switching agents uses the new agent's configured model when present.
               if (existing !== undefined) {

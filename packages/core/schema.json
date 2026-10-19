@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "ab8fea18-0d95-48a1-b631-c112235dc492",
-  "prevIds": ["0709c7fb-3e7c-4bec-a6c5-0dd42ae64919"],
+  "id": "80b5e06a-85fe-4c16-b0e3-ba196868a59e",
+  "prevIds": ["ab8fea18-0d95-48a1-b631-c112235dc492"],
   "ddl": [
     {
       "name": "account_state",
@@ -1723,6 +1723,16 @@
       "default": null,
       "generated": null,
       "name": "metadata",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "context_budget_reached",
       "entityType": "columns",
       "table": "session_v2"
     },

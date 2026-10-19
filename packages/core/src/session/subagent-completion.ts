@@ -7,6 +7,8 @@ import type { SessionMessage } from "./message.js"
 import type { SessionSchema } from "./schema.js"
 
 export const NO_TEXT = "Subagent completed without a text response."
+export const CONTEXT_BUDGET_NOTICE =
+  "This worker reached its context budget and is no longer available for task follow-ups."
 
 export type RunningBackgroundItem = SessionBackground.OutstandingItem
 

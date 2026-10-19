@@ -426,6 +426,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
 
     // 85% of the input limit, which takes precedence over the context window.
     const inputLimited = { context: 400_000, input: 272_000, output: 128_000 }
+    expect(compaction.budget(input(231_199, inputLimited))).toEqual({ usage: 231_199, ceiling: 231_200 })
     expect(yield* due(input(231_199, inputLimited))).toBe(false)
     expect(yield* due(input(231_200, inputLimited))).toBe(true)
     const native = (tokens: number, limit: { context: number; input?: number; output: number } = inputLimited) => {
@@ -444,6 +445,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
 
     // The summary's 16k output limit is more than 15% of a 100k window, so it sets the ceiling.
     const contextLimited = { context: 100_000, output: 10_000 }
+    expect(compaction.budget(input(83_999, contextLimited))).toEqual({ usage: 83_999, ceiling: 84_000 })
     expect(yield* due(input(83_999, contextLimited))).toBe(false)
     expect(yield* due(input(84_000, contextLimited))).toBe(true)
 
@@ -480,6 +482,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
     })
     const grown = { ...input(89_000, contextLimited), messages: [{ ...assistant, content: [tool] }] }
     expect(SessionCompaction.estimateContext(grown)).toBe(90_000)
+    expect(compaction.budget(grown)).toEqual({ usage: SessionCompaction.estimateContext(grown), ceiling: 84_000 })
     expect(yield* due(grown)).toBe(true)
     // A step estimates its prompt once and passes it; compaction decides on that instead of estimating again.
     expect(yield* due(grown, { measured: 0, estimated: 0 })).toBe(false)
@@ -537,6 +540,24 @@ it.effect("auto compaction estimates current content against the buffered prompt
       time: { created: 0, completed: 0 },
     })
     expect(yield* due({ ...grown, messages: [checkpoint] })).toBe(false)
+
+    // The synchronous query remains available when automatic compaction is disabled.
+    yield* compaction.transform((editor) => editor.configure({ auto: false }))
+    expect(compaction.budget(grown)).toEqual({ usage: 90_000, ceiling: 84_000 })
+    expect(yield* due(grown)).toBe(false)
+    yield* compaction.transform((editor) => editor.configure({ buffer: 20_000 }))
+    expect(compaction.budget(grown)).toEqual({ usage: 90_000, ceiling: 80_000 })
+    expect(compaction.budget(input(1_000_000, { context: 0, output: 0 }))).toEqual({
+      usage: 1_000_000,
+      ceiling: Number.POSITIVE_INFINITY,
+    })
+
+    // Oversized buffers fall back to the default ceiling, just as automatic compaction does.
+    for (const buffer of [100_000, 120_000]) {
+      yield* compaction.transform((editor) => editor.configure({ buffer }))
+      const budget = compaction.budget(grown)
+      expect(budget).toEqual({ usage: 90_000, ceiling: 84_000 })
+    }
   }),
 )
 
