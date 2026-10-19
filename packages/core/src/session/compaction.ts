@@ -36,6 +36,7 @@ import { SessionRunnerModel } from "./runner/model.js"
 import { SessionRunnerRetry } from "./runner/retry.js"
 import { toLLMMessages } from "./runner/to-llm-message.js"
 import { SessionRecentText } from "./recent-text.js"
+import type { SessionSchema } from "./schema.js"
 import { contentFilterError, toSessionError } from "./to-session-error.js"
 import { SessionUsage } from "./usage.js"
 
@@ -78,6 +79,8 @@ export interface Interface extends State.Transformable<Editor> {
     context: Effect.Effect<SessionContext.Loaded, E>,
     estimate?: Estimate,
   ) => Effect.Effect<void, E>
+  /** Discards a held summary and waits for any background work and its finalizers to stop. */
+  readonly cancel: (sessionID: SessionSchema.ID) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCompaction") {}
@@ -951,6 +954,11 @@ export const layer = Layer.effect(
           Effect.ensuring(Effect.sync(() => spent.delete(trigger.context.session.id))),
         ),
       precompute,
+      cancel: Effect.fn("SessionCompaction.cancel")(function* (sessionID: SessionSchema.ID) {
+        const held = precomputed.get(sessionID)
+        precomputed.delete(sessionID)
+        if (held) yield* Fiber.interrupt(held.fiber)
+      }),
     })
   }),
 )
@@ -1188,6 +1196,7 @@ const inputWindow = (limit: SessionContext.Loaded["model"]["limit"]) =>
  */
 const hasMeasuredPrompt = (message: SessionMessage.Info, model: SessionContext.Loaded["model"]["ref"]) =>
   message.type === "assistant" &&
+  !message.contextInvalidated &&
   message.model.providerID === model.providerID &&
   !message.error &&
   message.tokens !== undefined &&

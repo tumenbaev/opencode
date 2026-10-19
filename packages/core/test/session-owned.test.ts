@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { and, eq } from "drizzle-orm"
-import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Scope } from "effect"
 import { Agent } from "@opencode/schema/agent"
 import { Event } from "@opencode/schema/event"
 import { Model } from "@opencode/schema/model"
@@ -97,6 +97,7 @@ const setup = Effect.fnUntraced(function* (options?: {
   const resumes: SessionSchema.ID[] = []
   const wakes: Array<{ sessionID: SessionSchema.ID; pending: SessionMessage.ID[]; enqueued: number }> = []
   const execution = SessionExecution.Service.of({
+    maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
     active: Effect.succeed(new Set<SessionSchema.ID>()),
     isActive: () => Effect.succeed(false),
     resume: (id) =>
@@ -626,6 +627,7 @@ describe("Session-owned handles", () => {
       })
       const fixture = yield* setup({
         execution: SessionExecution.Service.of({
+          maintenance: coordinator.maintenance,
           active: coordinator.active,
           isActive: coordinator.isActive,
           resume: (id) =>

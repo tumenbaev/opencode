@@ -1,26 +1,32 @@
 export * as SessionRunCoordinator from "./run-coordinator.js"
 
-import { Deferred, Effect, Exit, Fiber, FiberSet, Scope } from "effect"
+import { Deferred, Effect, Exit, Fiber, FiberSet, Option, Scope } from "effect"
 import type { Promotable } from "./inbox.js"
 
 /** Serializes execution for each key while allowing different keys to run concurrently. */
 export interface Coordinator<Key, E, Reason = never> {
-  /** Snapshots keys with an execution owned by this coordinator. */
+  /** Snapshots keys with an execution or maintenance reservation owned by this coordinator. */
   readonly active: Effect.Effect<ReadonlySet<Key>>
-  /** Checks ownership for one key, including cleanup and terminal settlement. */
+  /** Checks execution or maintenance ownership for one key, including cleanup and terminal settlement. */
   readonly isActive: (key: Key) => Effect.Effect<boolean>
-  /** Starts an execution while idle, or joins the active execution and returns its exit. */
+  /** Starts or joins normal execution; during maintenance requests a forced successor after cleanup. */
   readonly run: (key: Key) => Effect.Effect<void, E>
+  /**
+   * Reserves an idle key without execution lifecycle hooks. Returns none when busy.
+   * The coordinator owns the operation: disconnecting its waiter does not cancel it.
+   * Wakes and explicit runs wait for cleanup before starting normal execution.
+   */
+  readonly maintenance: <A, E2, R>(key: Key, effect: Effect.Effect<A, E2, R>) => Effect.Effect<Option.Option<A>, E2, R>
   /** Rings the doorbell: an idle key starts an execution; an active one drains again before settling. */
   readonly wake: (key: Key, scope?: Promotable) => Effect.Effect<void>
   /**
-   * Stops the active execution and clears its doorbell. No-op when idle. Resolves once the
-   * interruption is accepted, not when cleanup settles: the execution fiber finishes its
-   * finalizers and settled hook on its own time. Returns whether an active execution was
-   * interrupted.
+   * Stops the active owner and clears an execution's doorbell (maintenance retains wakes).
+   * No-op when idle. Resolves once interruption is accepted, not when cleanup settles:
+   * the owner finishes its finalizers and any settled hook on its own time. Returns whether
+   * an active owner was interrupted. Compose with `awaitIdle` for settlement.
    */
   readonly interrupt: (key: Key, reason?: Reason) => Effect.Effect<boolean>
-  /** Resolves once no execution is active for the key. Returns immediately when already idle and never starts work. */
+  /** Resolves once no execution or maintenance is active. Returns immediately when idle and never starts work. */
   readonly awaitIdle: (key: Key) => Effect.Effect<void>
 }
 
@@ -31,12 +37,16 @@ export interface Coordinator<Key, E, Reason = never> {
  * instead of ending. The doorbell closes the gap between a drain's last eligibility check
  * and the idle transition, since those cannot be one atomic step. `done` resolves joiners
  * with this execution's exit.
+ * Maintenance uses the same ownership record, but `done` only signals cleanup; its
+ * generic result has a separate deferred, and `pendingRun` requests a forced successor.
  */
 type Execution<E, Reason> = {
+  readonly kind: "execution" | "maintenance"
   readonly done: Deferred.Deferred<void, E>
   owner?: Fiber.Fiber<void>
   scope: Promotable
   pendingWake?: Promotable
+  pendingRun?: Deferred.Deferred<void, E>
   stopping: boolean
   interruptionReason?: Reason
 }
@@ -79,9 +89,10 @@ export const make = <Key, E, Reason = never>(options: {
         ),
       )
 
-    const start = (key: Key, force: boolean, scope: Promotable) => {
+    const start = (key: Key, force: boolean, scope: Promotable, done = Deferred.makeUnsafe<void, E>()) => {
       const execution: Execution<E, Reason> = {
-        done: Deferred.makeUnsafe<void, E>(),
+        kind: "execution",
+        done,
         scope,
         stopping: false,
       }
@@ -116,10 +127,52 @@ export const make = <Key, E, Reason = never>(options: {
 
     const isActive = (key: Key) => Effect.sync(() => executions.has(key))
 
+    const maintenance = <A, E2, R>(key: Key, effect: Effect.Effect<A, E2, R>) =>
+      Effect.gen(function* () {
+        const context = yield* Effect.context<R>()
+        return yield* Effect.suspend(() => {
+          if (executions.has(key)) return Effect.succeed(Option.none<A>())
+          const result = Deferred.makeUnsafe<A, E2>()
+          const reservation: Execution<E, Reason> = {
+            kind: "maintenance",
+            done: Deferred.makeUnsafe<void, E>(),
+            scope: "input",
+            stopping: false,
+          }
+          // Admission and assigning the scoped owner are synchronous, just like start.
+          executions.set(key, reservation)
+          reservation.owner = fork(
+            Effect.yieldNow.pipe(
+              Effect.andThen(effect.pipe(Effect.provide(context))),
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  // Maintenance has no lifecycle hooks or execution claim. Only an actual
+                  // admission or explicit run may start a normal drain after its cleanup.
+                  if (reservation.pendingRun) start(key, true, "input", reservation.pendingRun)
+                  else if (reservation.pendingWake) start(key, false, reservation.pendingWake)
+                  else executions.delete(key)
+                  Deferred.doneUnsafe(reservation.done, Exit.void)
+                  Deferred.doneUnsafe(result, exit)
+                }),
+              ),
+              Effect.exit,
+              Effect.asVoid,
+            ),
+          )
+          return Deferred.await(result).pipe(Effect.map(Option.some))
+        })
+      })
+
     const run = (key: Key): Effect.Effect<void, E> =>
       Effect.suspend(() => {
         const execution = executions.get(key)
         if (execution !== undefined) {
+          if (execution.kind === "maintenance") {
+            // Do not join the maintenance result or accidentally turn a resume into a
+            // non-forcing wake. All resumes share the forced successor's actual exit.
+            execution.pendingRun ??= Deferred.makeUnsafe<void, E>()
+            return Deferred.await(execution.pendingRun)
+          }
           // A stopping execution refuses joiners: wait out its cleanup, then run fresh.
           if (execution.stopping)
             return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(run(key)))
@@ -151,9 +204,9 @@ export const make = <Key, E, Reason = never>(options: {
           return false
         }
         execution.stopping = true
-        // Wakes recorded so far belong to the interrupted intent; the interrupt claims them.
-        // Wakes arriving during cleanup are new admissions and restart normally at settle.
-        execution.pendingWake = undefined
+        // Execution wakes belong to the interrupted intent; cleanup-era wakes are new
+        // admissions. Maintenance has no execution intent, so all its wakes survive.
+        if (execution.kind === "execution") execution.pendingWake = undefined
         execution.interruptionReason = reason
         // Fire and forget: nobody benefits from waiting out cleanup here, and callers like
         // the interrupt endpoint must acknowledge immediately even when finalizers are slow.
@@ -170,5 +223,13 @@ export const make = <Key, E, Reason = never>(options: {
         return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(awaitIdle(key)))
       })
 
-    return { active: Effect.sync(() => new Set(executions.keys())), isActive, run, wake, interrupt, awaitIdle }
+    return {
+      active: Effect.sync(() => new Set(executions.keys())),
+      isActive,
+      run,
+      maintenance,
+      wake,
+      interrupt,
+      awaitIdle,
+    }
   })

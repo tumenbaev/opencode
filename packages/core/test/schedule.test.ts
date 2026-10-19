@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { FileSystem } from "@opencode/core/filesystem"
-import { Clock, DateTime, Effect, Fiber, Latch, Layer, LayerMap, Queue, Schema, Sink, Stream } from "effect"
+import { Clock, DateTime, Effect, Fiber, Latch, Layer, LayerMap, Option, Queue, Schema, Sink, Stream } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { ExitCode, makeHandle, ProcessId } from "effect/process/ChildProcessSpawner"
 import { TestClock } from "effect/testing"
@@ -60,6 +60,7 @@ const execution = Layer.succeed(
     active: Effect.sync(() => new Set()),
     isActive: () => Effect.succeed(false),
     resume: () => Effect.void,
+    maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
     interrupt: () => Effect.succeed(false),
     wake: (sessionID) =>
       Effect.suspend(() => {

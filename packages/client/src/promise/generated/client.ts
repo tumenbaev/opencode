@@ -47,6 +47,8 @@ import type {
   SessionShellOutput,
   SessionCompactInput,
   SessionCompactOutput,
+  SessionTrimInput,
+  SessionTrimOutput,
   SessionRevertStageInput,
   SessionRevertStageOutput,
   SessionRevertClearInput,
@@ -820,6 +822,17 @@ export function make(options: ClientOptions) {
             body: { id: input["id"], delivery: input["delivery"] },
             successStatus: 200,
             declaredStatuses: [400, 401, 404, 409],
+            empty: false,
+          },
+          requestOptions,
+        ).then((value) => value.data),
+      trim: (input: SessionTrimInput, requestOptions?: RequestOptions) =>
+        request<{ readonly data: SessionTrimOutput }>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/trim`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
             empty: false,
           },
           requestOptions,

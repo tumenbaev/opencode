@@ -30,6 +30,7 @@ import { AbsolutePath, RelativePath } from "../schema.js"
 import type { SessionSchema } from "./schema.js"
 import { SessionHistory } from "./history.js"
 import { ProjectTable } from "../project/sql.js"
+import { TrimmingHistory } from "./trimming-history.js"
 
 type DatabaseService = Database.Interface["db"]
 type MessageEvent = Exclude<
@@ -336,6 +337,46 @@ type Writes = Pick<
 
 function run(db: DatabaseService, event: MessageEvent) {
   return Effect.gen(function* () {
+    if (event.type === SessionEvent.ContextTrimmed.type) {
+      if (event.data.targets.length === 0) return
+      const rows = yield* db
+        .select()
+        .from(SessionMessageTable)
+        .where(
+          and(
+            eq(SessionMessageTable.session_id, event.data.sessionID),
+            or(
+              inArray(
+                SessionMessageTable.id,
+                event.data.targets.map((target) => target.messageID),
+              ),
+              eq(SessionMessageTable.type, "assistant"),
+            ),
+          ),
+        )
+        .orderBy(asc(SessionMessageTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      const messages = (yield* SessionHistory.withParts(db, rows)).map(SessionHistory.decodeMessageRowSync)
+      const updated = TrimmingHistory.apply(messages, event.data.targets, event.data.note)
+      // Trimming rewrites complete settled messages, not streaming parts. This path writes both the envelope and
+      // effective content, preserving inline, split and mixed rows regardless of the current part_rows setting.
+      const writes = messageWrites(db, event)
+      for (const [index, message] of updated.entries()) {
+        if (message === messages[index]) continue
+        if (message.type === "assistant") {
+          yield* writes.updateAssistant(message)
+          continue
+        }
+        yield* db
+          .update(SessionMessageTable)
+          .set({ data: { ...rows[index].data, contextReplacement: message.contextReplacement } })
+          .where(and(eq(SessionMessageTable.id, message.id), eq(SessionMessageTable.session_id, event.data.sessionID)))
+          .run()
+          .pipe(Effect.orDie)
+      }
+      return
+    }
     const writes = (yield* partRowsEnabled) ? partRowWrites(db, event) : messageWrites(db, event)
     const adapter: SessionMessageUpdater.Adapter = {
       ...writes,
@@ -556,7 +597,8 @@ function messageWrites(db: DatabaseService, event: MessageEvent): Writes {
     const owner = { sessionID: event.data.sessionID, messageID: message.id, seq: updated.seq }
     // Most updates only carry existing refs forward; a content rewrite may also drop some. `externalize` returns
     // the same message when it extracted nothing, so streaming updates skip the ref tables entirely.
-    if (event.type === SessionEvent.MessageContentUpdated.type) yield* SessionBlob.syncRefs(db, owner, data)
+    if (event.type === SessionEvent.MessageContentUpdated.type || event.type === SessionEvent.ContextTrimmed.type)
+      yield* SessionBlob.syncRefs(db, owner, data)
     else if (stored !== message) yield* SessionBlob.recordRefs(db, owner, data)
   })
   const reads = assistantReads(db, event, (row) =>
@@ -1003,6 +1045,7 @@ const layer = Layer.effectDiscard(
       setSession(db, event.data.sessionID, { time_archived: null, time_updated: event.created }),
     )
     yield* bus.project(SessionEvent.MessageContentUpdated, (event) => run(db, event))
+    yield* bus.project(SessionEvent.ContextTrimmed, (event) => run(db, event))
     yield* bus.project(SessionEvent.UsageRecorded, (event) => applyUsage(db, event.data.sessionID, event.data))
     yield* bus.project(SessionEvent.Forked, (event) => projectFork(db, event))
     yield* bus.project(SessionEvent.InboxDelivered, (event) =>

@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
 import { testEffect } from "./lib/effect"
@@ -7,6 +7,347 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(Layer.empty)
 
 describe("SessionRunCoordinator", () => {
+  describe("maintenance", () => {
+    it.effect("preserves caller-context results and failures without execution lifecycle or an input-free drain", () =>
+      Effect.gen(function* () {
+        class Value extends Context.Service<Value, { readonly value: number }>()("test/MaintenanceValue") {}
+        const lifecycle: string[] = []
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Effect.sync(() => void lifecycle.push("drain")),
+          started: () => Effect.sync(() => void lifecycle.push("started")),
+          settled: () => Effect.sync(() => void lifecycle.push("settled")),
+        })
+
+        const result = yield* coordinator
+          .maintenance(
+            "session",
+            Value.use((service) => Effect.succeed(service.value)),
+          )
+          .pipe(Effect.provideService(Value, { value: 42 }))
+        yield* coordinator.awaitIdle("session")
+
+        expect(result).toEqual(Option.some(42))
+        const failed = yield* coordinator
+          .maintenance(
+            "session",
+            Value.use((service) => Effect.fail(service.value)),
+          )
+          .pipe(Effect.provideService(Value, { value: 42 }), Effect.exit)
+        expect(failed).toEqual(Exit.fail(42))
+        yield* coordinator.awaitIdle("session")
+        expect(yield* coordinator.maintenance("session", Effect.succeed("again"))).toEqual(Option.some("again"))
+        expect(lifecycle).toEqual([])
+        expect(yield* coordinator.isActive("session")).toBe(false)
+        expect(yield* coordinator.active).toEqual(new Set())
+      }),
+    )
+
+    it.effect("atomically excludes competing maintenance and releases a steer-only wake with its scope intact", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        let calls = 0
+        const drains: Array<{ force: boolean; scope: SessionInbox.Promotable }> = []
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: (_key, force, scope) => Effect.sync(() => void drains.push({ force, scope })),
+        })
+        const operation = Effect.sync(() => ++calls).pipe(
+          Effect.tap(() => Deferred.succeed(started, undefined)),
+          Effect.tap(() => Deferred.await(release)),
+        )
+        const attempts = yield* Effect.all(
+          [coordinator.maintenance("session", operation), coordinator.maintenance("session", operation)],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+
+        expect(yield* coordinator.active).toEqual(new Set(["session"]))
+        expect(yield* coordinator.isActive("session")).toBe(true)
+        expect(yield* coordinator.maintenance("other", Effect.succeed("other"))).toEqual(Option.some("other"))
+        yield* coordinator.wake("session", "steer")
+        expect(drains).toEqual([])
+        yield* Deferred.succeed(release, undefined)
+        const results = yield* Fiber.join(attempts)
+        yield* coordinator.awaitIdle("session")
+
+        expect(results).toContainEqual(Option.some(1))
+        expect(results.filter(Option.isNone)).toHaveLength(1)
+        expect(calls).toBe(1)
+        expect(drains).toEqual([{ force: false, scope: "steer" }])
+        expect(yield* coordinator.active).toEqual(new Set())
+      }),
+    )
+
+    it.effect("rejects maintenance during normal execution and terminal settlement", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const settling = yield* Deferred.make<void>()
+        const settled = yield* Deferred.make<void>()
+        let calls = 0
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          settled: () => Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(settled))),
+        })
+        const operation = Effect.sync(() => ++calls)
+        yield* coordinator.wake("session")
+        yield* Deferred.await(started)
+        expect(yield* coordinator.maintenance("session", operation)).toEqual(Option.none())
+        yield* Deferred.succeed(release, undefined)
+        yield* Deferred.await(settling)
+        expect(yield* coordinator.maintenance("session", operation)).toEqual(Option.none())
+        yield* Deferred.succeed(settled, undefined)
+        yield* coordinator.awaitIdle("session")
+
+        expect(calls).toBe(0)
+        expect(yield* coordinator.maintenance("session", operation)).toEqual(Option.some(1))
+      }),
+    )
+
+    it.effect("defers coalesced wakes through a maintenance defect and cleanup", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const cleaning = yield* Deferred.make<void>()
+        const cleaned = yield* Deferred.make<void>()
+        const error = new Error("maintenance defect")
+        const drains: Array<{ force: boolean; scope: SessionInbox.Promotable }> = []
+        const lifecycle: string[] = []
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: (_key, force, scope) => Effect.sync(() => void drains.push({ force, scope })),
+          started: () => Effect.sync(() => void lifecycle.push("started")),
+          settled: () => Effect.sync(() => void lifecycle.push("settled")),
+        })
+        const operation = Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(Effect.die(error)),
+          Effect.ensuring(Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(cleaned)))),
+        )
+        const waiter = yield* coordinator.maintenance("session", operation).pipe(Effect.exit, Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* coordinator.wake("session", "steer")
+        expect(drains).toEqual([])
+        yield* Deferred.succeed(release, undefined)
+        yield* Deferred.await(cleaning)
+        yield* coordinator.wake("session", "input")
+        yield* coordinator.wake("session", "steer")
+        expect(yield* coordinator.isActive("session")).toBe(true)
+        expect(yield* coordinator.maintenance("session", Effect.void)).toEqual(Option.none())
+        expect(lifecycle).toEqual([])
+        expect(drains).toEqual([])
+        yield* Deferred.succeed(cleaned, undefined)
+        const exit = yield* Fiber.join(waiter)
+        yield* coordinator.awaitIdle("session")
+
+        expect(exit).toEqual(Exit.die(error))
+        expect(drains).toEqual([{ force: false, scope: "input" }])
+        expect(lifecycle).toEqual(["started", "settled"])
+        expect(yield* coordinator.active).toEqual(new Set())
+      }),
+    )
+
+    // Ordinary release without a wake, and interruption with both kinds of pending admission.
+    for (const outcome of ["success", "interruption"] as const) {
+      it.effect(`resumes after maintenance ${outcome} with a forced normal execution`, () =>
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const cleaning = yield* Deferred.make<void>()
+          const cleaned = yield* Deferred.make<void>()
+          const failure = new Error("normal execution failed")
+          const forces: boolean[] = []
+          const coordinator = yield* SessionRunCoordinator.make({
+            drain: (_key, force) =>
+              Effect.sync(() => void forces.push(force)).pipe(Effect.andThen(Effect.fail(failure))),
+          })
+          const maintenance = yield* coordinator
+            .maintenance(
+              "session",
+              Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.ensuring(Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(cleaned)))),
+              ),
+            )
+            .pipe(Effect.exit, Effect.forkChild)
+          yield* Deferred.await(started)
+          if (outcome === "interruption") yield* coordinator.wake("session", "steer")
+          const first = yield* coordinator.run("session").pipe(Effect.exit, Effect.forkChild)
+          const second = yield* coordinator.run("session").pipe(Effect.exit, Effect.forkChild)
+          yield* Effect.yieldNow
+          expect(forces).toEqual([])
+          if (outcome === "interruption") expect(yield* coordinator.interrupt("session")).toBe(true)
+          else yield* Deferred.succeed(release, undefined)
+          yield* Deferred.await(cleaning)
+          expect(forces).toEqual([])
+          expect(first.pollUnsafe()).toBeUndefined()
+          expect(second.pollUnsafe()).toBeUndefined()
+          yield* Deferred.succeed(cleaned, undefined)
+          const maintenanceExit = yield* Fiber.join(maintenance)
+          expect(Exit.isSuccess(maintenanceExit)).toBe(outcome === "success")
+          const exits = yield* Effect.all([Fiber.join(first), Fiber.join(second)])
+
+          expect(exits).toEqual([Exit.fail(failure), Exit.fail(failure)])
+          expect(forces).toEqual([true])
+          expect(yield* coordinator.active).toEqual(new Set())
+        }),
+      )
+    }
+
+    it.effect("interruption without a pending admission releases maintenance without execution lifecycle", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        let cleaned = false
+        const lifecycle: string[] = []
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Effect.sync(() => void lifecycle.push("drain")),
+          started: () => Effect.sync(() => void lifecycle.push("started")),
+          settled: () => Effect.sync(() => void lifecycle.push("settled")),
+        })
+        const waiter = yield* coordinator
+          .maintenance(
+            "session",
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  cleaned = true
+                }),
+              ),
+            ),
+          )
+          .pipe(Effect.exit, Effect.forkChild)
+        yield* Deferred.await(started)
+        expect(yield* coordinator.interrupt("session")).toBe(true)
+        yield* coordinator.awaitIdle("session")
+        const exit = yield* Fiber.join(waiter)
+        expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        expect(cleaned).toBe(true)
+        expect(yield* coordinator.active).toEqual(new Set())
+        expect(lifecycle).toEqual([])
+      }),
+    )
+
+    it.effect("interrupts the maintenance owner, retains admitted wakes, and waits for cleanup", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const cleaning = yield* Deferred.make<void>()
+        const cleaned = yield* Deferred.make<void>()
+        const draining = yield* Deferred.make<void>()
+        const drained = yield* Deferred.make<void>()
+        const scopes: SessionInbox.Promotable[] = []
+        const lifecycle: string[] = []
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: (_key, _force, scope) =>
+            Effect.sync(() => void scopes.push(scope)).pipe(
+              Effect.andThen(Deferred.succeed(draining, undefined)),
+              Effect.andThen(Deferred.await(drained)),
+            ),
+          started: () => Effect.sync(() => void lifecycle.push("started")),
+          settled: () => Effect.sync(() => void lifecycle.push("settled")),
+        })
+        const waiter = yield* coordinator
+          .maintenance(
+            "session",
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.ensuring(Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(cleaned)))),
+            ),
+          )
+          .pipe(Effect.exit, Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* coordinator.wake("session", "input")
+        expect(yield* coordinator.interrupt("session")).toBe(true)
+        yield* Deferred.await(cleaning)
+        expect(yield* coordinator.interrupt("session")).toBe(false)
+        const idle = yield* coordinator.awaitIdle("session").pipe(Effect.forkChild)
+        yield* coordinator.wake("session", "steer")
+        yield* Effect.yieldNow
+        expect(yield* coordinator.isActive("session")).toBe(true)
+        expect(yield* coordinator.maintenance("session", Effect.void)).toEqual(Option.none())
+        expect(idle.pollUnsafe()).toBeUndefined()
+        expect(lifecycle).toEqual([])
+        expect(scopes).toEqual([])
+        yield* Deferred.succeed(cleaned, undefined)
+        const exit = yield* Fiber.join(waiter)
+        expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        yield* Deferred.await(draining)
+        expect(idle.pollUnsafe()).toBeUndefined()
+        expect(scopes).toEqual(["input"])
+        yield* Deferred.succeed(drained, undefined)
+        yield* Fiber.join(idle)
+        expect(lifecycle).toEqual(["started", "settled"])
+        expect(yield* coordinator.active).toEqual(new Set())
+      }),
+    )
+
+    it.effect("keeps ownership after its caller disconnects until the operation finishes", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        let completed = false
+        let drains = 0
+        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Effect.sync(() => void drains++) })
+        const caller = yield* coordinator
+          .maintenance(
+            "session",
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(
+                Effect.sync(() => {
+                  completed = true
+                }),
+              ),
+            ),
+          )
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* Fiber.interrupt(caller)
+        expect(yield* coordinator.isActive("session")).toBe(true)
+        expect(yield* coordinator.maintenance("session", Effect.void)).toEqual(Option.none())
+        yield* Deferred.succeed(release, undefined)
+        yield* coordinator.awaitIdle("session")
+        expect(completed).toBe(true)
+        expect(drains).toBe(0)
+        expect(yield* coordinator.active).toEqual(new Set())
+      }),
+    )
+
+    it.effect("interrupts maintenance and releases ownership when the coordinator scope closes", () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        let cleaned = false
+        const lifecycle: string[] = []
+        const coordinator = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const coordinator = yield* SessionRunCoordinator.make({
+              drain: () => Effect.sync(() => void lifecycle.push("drain")),
+              started: () => Effect.sync(() => void lifecycle.push("started")),
+              settled: () => Effect.sync(() => void lifecycle.push("settled")),
+            })
+            yield* coordinator
+              .maintenance(
+                "session",
+                Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      cleaned = true
+                    }),
+                  ),
+                ),
+              )
+              .pipe(Effect.forkChild)
+            yield* Deferred.await(started)
+            return coordinator
+          }),
+        )
+        expect(cleaned).toBe(true)
+        expect(yield* coordinator.active).toEqual(new Set())
+        expect(lifecycle).toEqual([])
+      }),
+    )
+  })
+
   it.effect("joins concurrent resumes for one key", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>()

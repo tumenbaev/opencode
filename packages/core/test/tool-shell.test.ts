@@ -3,7 +3,7 @@ import { realpathSync, watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Stream } from "effect"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -114,6 +114,7 @@ const executionNode = makeGlobalNode({
         })
       })
       return SessionExecution.Service.of({
+        maintenance: (_id, effect) => effect.pipe(Effect.map(Option.some)),
         active: Effect.succeed(new Set()),
         isActive: () => Effect.succeed(false),
         resume: complete,
