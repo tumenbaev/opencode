@@ -155,6 +155,8 @@ export const Plugin = {
                 return yield* new ToolFailure({
                   message: `Session ${existing.id} is not a child of the current session`,
                 })
+              if (existing !== undefined && (yield* sessions.contextBudgetReached(existing.id)))
+                return yield* new ToolFailure({ message: SubagentCompletion.CONTEXT_BUDGET_NOTICE })
               const override: Model.Ref | undefined = undefined // Subagent model overrides are disabled.
               // Continuing with a different agent switches the child, mirroring create semantics
               // where an explicit model wins over the agent's configured model, which wins over the inherited one.
@@ -242,7 +244,11 @@ export const Plugin = {
               return {
                 sessionID: child.id,
                 status: "completed" as const,
-                output: result?.info.output ?? SubagentCompletion.NO_TEXT,
+                output: yield* SubagentCompletion.withContextBudgetNotice(
+                  sessions,
+                  child.id,
+                  result?.info.output ?? SubagentCompletion.NO_TEXT,
+                ),
               }
             }).pipe(
               Effect.map((output) => ({

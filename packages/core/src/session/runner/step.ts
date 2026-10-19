@@ -8,6 +8,7 @@ import {
   type ToolCall,
 } from "@opencode/ai/effect"
 import type { Agent } from "@opencode/schema/agent"
+import { TokenUsage } from "@opencode/schema/token-usage"
 import { Cause, Clock, Data, Effect, Exit, Fiber, Option, Stream } from "effect"
 import { SessionError } from "@opencode/schema/session-error"
 import { Bus } from "../../bus.js"
@@ -46,6 +47,8 @@ interface Input {
   readonly assistantMessageID: SessionMessage.ID
   readonly agent: Agent.ID
   readonly model: SessionRunnerModel.Resolved
+  /** Only an unlatched child gets a threshold; accepted work is never interrupted when it is reached. */
+  readonly contextBudgetThreshold?: number
   readonly prepared: Omit<SessionModelRequest.Prepared, "event">
   readonly retry: (
     cause: AIError,
@@ -256,8 +259,8 @@ export const make = Effect.gen(function* () {
               : undefined
           const usage = record.finish ? SessionUsage.record(record.finish.usage, input.model.cost) : undefined
           if (record.failure) yield* publisher.publishStepFailure({ ...usage, snapshot, files })
-          if (record.finish && usage && !record.failure)
-            yield* bus.publish(SessionEvent.Step.Ended, {
+          if (record.finish && usage && !record.failure) {
+            const ended = {
               sessionID: input.sessionID,
               assistantMessageID: yield* publisher.startAssistant(),
               finish: record.finish.finish,
@@ -266,7 +269,17 @@ export const make = Effect.gen(function* () {
               ...usage,
               snapshot,
               files,
-            })
+            }
+            if (
+              input.contextBudgetThreshold !== undefined &&
+              TokenUsage.total(usage.tokens) >= input.contextBudgetThreshold
+            )
+              yield* bus.publishAll([
+                [SessionEvent.Step.Ended, ended],
+                [SessionEvent.ContextBudgetReached, { sessionID: input.sessionID }],
+              ])
+            else yield* bus.publish(SessionEvent.Step.Ended, ended)
+          }
         }
 
         if (
