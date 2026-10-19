@@ -1,14 +1,8 @@
 import { createContext, useContext } from "solid-js"
 
-export interface ComposerHint {
-  label: string
-  shortcut: string
-}
-
 export interface ComposerTab {
   id: string
   label: string
-  hints?: () => ComposerHint[]
 }
 
 export const ComposerContext = createContext<{

@@ -223,8 +223,8 @@ test("accepts every v2-only named command ID", () => {
 
 test("centralizes named command defaults and resolves explicit none", () => {
   const defaults = {
-    "composer.subagent.up": "up",
-    "composer.subagent.down": "down",
+    "composer.subagent.up": "up,k",
+    "composer.subagent.down": "down,j",
     "composer.subagent.select": "return",
     "composer.subagent.interrupt": "ctrl+d",
     "composer.shell.up": "up",

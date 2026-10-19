@@ -111,7 +111,8 @@ async function setup(width: number, output = "") {
 
 test.each([40, 100])("shell output opens, follows, scrolls, and survives exit at %s columns", async (width) => {
   await using app = await setup(width, Array.from({ length: 50 }, (_, i) => `Frame ${i + 1}\n`).join(""))
-  expect(app.captureCharFrame()).toContain("output")
+  // Fork: ShellTab omits the output footer hint.
+  // expect(app.captureCharFrame()).toContain("output")
   app.mockInput.pressEnter()
   await app.waitForFrame((frame) => frame.includes("Shell output") && frame.includes("Frame 50"))
   const scroll = app.renderer.root.findDescendantById("shell-output-scroll")
