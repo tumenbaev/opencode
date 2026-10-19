@@ -14,7 +14,6 @@ export function ShellTab(props: { sessionID: string }) {
   const client = useClient()
   const theme = useTheme()
   const composer = useComposerTab()
-  const shortcuts = Keymap.useShortcuts()
   const dialog = useDialog()
 
   const entries = createMemo(() =>
@@ -50,13 +49,6 @@ export function ShellTab(props: { sessionID: string }) {
     const cleanup = composer.register({
       id: "shell",
       label: "Shell",
-      hints: () =>
-        selectedEntry()
-          ? [
-              { label: "output", shortcut: shortcuts.get("composer.shell.select") ?? "" },
-              { label: "kill", shortcut: shortcuts.get("composer.shell.kill") ?? "" },
-            ]
-          : [],
     })
     onCleanup(cleanup)
   })
@@ -112,7 +104,7 @@ export function ShellTab(props: { sessionID: string }) {
 
   return (
     <Show when={composer.active("shell")}>
-      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5} ref={(r: ScrollBoxRenderable) => (scroll = r)}>
+      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={4} ref={(r: ScrollBoxRenderable) => (scroll = r)}>
         <Show when={entries().length > 0} fallback={<text fg={theme.text.muted}> No shell commands</text>}>
           <For each={entries()}>
             {(shell, index) => {

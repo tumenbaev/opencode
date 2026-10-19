@@ -1,4 +1,4 @@
-import { createMemo, For, Show, createEffect, onMount, onCleanup } from "solid-js"
+import { createMemo, For, Show, createEffect, on, onMount, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { TextAttributes, ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
@@ -7,7 +7,6 @@ import { useRoute, useRouteData } from "../../../context/route"
 import { useData } from "../../../context/data"
 import { useClient } from "../../../context/client"
 import { useTheme } from "../../../context/theme"
-import { useStorage } from "../../../context/storage"
 import { Locale } from "../../../util/locale"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
@@ -31,73 +30,75 @@ export function SubagentsTab(props: { sessionID: string }) {
   const theme = useTheme()
   const navigate = useRoute().navigate
   const composer = useComposerTab()
-  const shortcuts = Keymap.useShortcuts()
 
   const session = createMemo(() => data.session.get(props.sessionID))
-  const [store, setStore] = createStore({ selected: 0 })
-  // The session route remounts on navigation, so the filter lives in TUI memory and only ctrl+a changes it.
-  const [filter, updateFilter] = useStorage().memory("subagents-filter", { initial: { active: true } })
+  const [store, setStore] = createStore({ selected: 0, sessionID: "" })
 
   const entries = createMemo<SubagentEntry[]>(() => {
     const current = session()
     if (!current) return []
 
-    const result = sessionFamily<SessionInfo>(data.session.list(), current.id).map(
-      ({ session, prefix }): SubagentEntry => {
-        const title = withTimestampedFallback(session)
-        const agentMatch = title.match(/@(\w+) subagent/)
-        return {
-          sessionID: session.id,
-          agent: session.agent
-            ? Locale.titlecase(session.agent)
-            : agentMatch
-              ? Locale.titlecase(agentMatch[1])
-              : "Subagent",
-          title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
-          status: data.session.status(session.id),
-          current: session.id === route.sessionID,
-          prefix,
-        }
-      },
-    )
-
-    return result.filter((entry) => (filter.active ? entry.status === "running" : entry.status !== "running"))
+    return sessionFamily<SessionInfo>(data.session.list(), current.id).map(({ session, prefix }): SubagentEntry => {
+      const title = withTimestampedFallback(session)
+      const agentMatch = title.match(/@(\w+) subagent/)
+      return {
+        sessionID: session.id,
+        agent: session.agent
+          ? Locale.titlecase(session.agent)
+          : agentMatch
+            ? Locale.titlecase(agentMatch[1])
+            : "Subagent",
+        title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
+        status: data.session.status(session.id),
+        current: session.id === route.sessionID,
+        prefix,
+      }
+    })
   })
 
-  let selectedSessionID = ""
   let wasActive = false
   let scroll: ScrollBoxRenderable | undefined
 
   const selectedEntry = createMemo(() => entries()[store.selected])
 
-  createEffect(() => {
-    const active = composer.active("subagents")
-    if (!active) {
-      if (wasActive) {
-        selectedSessionID = ""
-        setStore("selected", 0)
-      }
-      wasActive = false
-      return
-    }
-    const list = entries()
-    if (selectedSessionID !== route.sessionID && list.length > 0) {
-      const currentIdx = list.findIndex((e) => e.current)
-      const next = currentIdx >= 0 ? currentIdx : 0
-      selectedSessionID = route.sessionID
-      setStore("selected", next)
-      const scrollCurrentIntoView = () => scrollToIndex(next, true)
-      scrollCurrentIntoView()
-      // The remounted scrollbox finishes layout on the next frame and resets its scroll position.
-      renderer.requestAnimationFrame(() => renderer.requestAnimationFrame(scrollCurrentIntoView))
-    }
-    wasActive = true
-    if (store.selected >= list.length) moveTo(Math.max(0, list.length - 1))
-  })
+  createEffect(
+    on(
+      () => [composer.active("subagents"), entries()] as const,
+      ([active, list]) => {
+        if (!active) {
+          wasActive = false
+          return
+        }
+        if (list.length === 0) return
+        const initial = !wasActive
+        const selectedID = initial ? route.sessionID : store.sessionID
+        const index = list.findIndex((entry) => entry.sessionID === selectedID)
+        const next = index >= 0 ? index : initial ? 0 : Math.min(store.selected, list.length - 1)
+        wasActive = true
+        moveTo(next, true)
+        if (initial) {
+          // The remounted scrollbox finishes layout on the next frame and resets its scroll position.
+          renderer.requestAnimationFrame(() =>
+            renderer.requestAnimationFrame(() => scrollToIndex(store.selected, true)),
+          )
+        }
+      },
+    ),
+  )
 
   function moveTo(next: number, center = false) {
-    setStore("selected", next)
+    setStore({ selected: next, sessionID: entries()[next]?.sessionID ?? "" })
     scrollToIndex(next, center)
+  }
+
+  function cycle(direction: number) {
+    const list = entries()
+    if (list.length === 0) return
+    const current = list.findIndex((entry) => entry.current)
+    const index =
+      current < 0 ? (direction > 0 ? 0 : list.length - 1) : (current + direction + list.length) % list.length
+    const entry = list[index]!
+    if (!entry.current) navigate({ type: "session", sessionID: entry.sessionID })
   }
 
   function scrollToIndex(index: number, center: boolean) {
@@ -119,18 +120,6 @@ export function SubagentsTab(props: { sessionID: string }) {
     const cleanup = composer.register({
       id: "subagents",
       label: "Subagents",
-      hints: () => {
-        const entry = selectedEntry()
-        return [
-          ...(entry?.status === "running"
-            ? [{ label: "interrupt", shortcut: shortcuts.get("composer.subagent.interrupt") ?? "" }]
-            : []),
-          {
-            label: `show ${filter.active ? "inactive" : "active"}`,
-            shortcut: shortcuts.get("composer.subagent.toggle-activity") ?? "",
-          },
-        ]
-      },
     })
     onCleanup(cleanup)
   })
@@ -159,7 +148,7 @@ export function SubagentsTab(props: { sessionID: string }) {
         run() {
           const list = entries()
           if (list.length === 0) return
-          moveTo((store.selected + 1) % list.length, true)
+          moveTo(Math.min(store.selected + 1, list.length - 1), true)
         },
       },
       {
@@ -172,15 +161,16 @@ export function SubagentsTab(props: { sessionID: string }) {
         },
       },
       {
-        id: "composer.subagent.toggle-activity",
-        title: "Toggle active subagents",
+        id: "session.child.previous",
+        title: "Go to previous child session",
         group: "Composer",
-        bind: "ctrl+a",
-        run() {
-          updateFilter((draft) => (draft.active = !draft.active))
-          setStore("selected", 0)
-          scroll?.scrollTo(0)
-        },
+        run: () => cycle(-1),
+      },
+      {
+        id: "session.child.next",
+        title: "Go to next child session",
+        group: "Composer",
+        run: () => cycle(1),
       },
       {
         id: "composer.subagent.interrupt",
@@ -197,18 +187,11 @@ export function SubagentsTab(props: { sessionID: string }) {
 
   return (
     <Show when={composer.active("subagents")}>
-      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5} ref={(r: ScrollBoxRenderable) => (scroll = r)}>
-        <Show
-          when={entries().length > 0}
-          fallback={<text fg={theme.text.muted}> No {filter.active ? "active" : "inactive"} subagents</text>}
-        >
+      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={4} ref={(r: ScrollBoxRenderable) => (scroll = r)}>
+        <Show when={entries().length > 0} fallback={<text fg={theme.text.muted}> No subagents</text>}>
           <For each={entries()}>
             {(entry, index) => {
               const active = createMemo(() => index() === store.selected)
-              const status = createMemo(() => {
-                if (entry.status === "running") return "Running"
-                return ""
-              })
               return (
                 <box
                   flexDirection="row"
@@ -221,9 +204,9 @@ export function SubagentsTab(props: { sessionID: string }) {
                         ? theme.background.action.primary.selected
                         : theme.background.action.primary.base
                   }
-                  onMouseMove={() => setStore("selected", index())}
+                  onMouseMove={() => moveTo(index())}
                   onMouseUp={() => {
-                    setStore("selected", index())
+                    moveTo(index())
                     navigate({ type: "session", sessionID: entry.sessionID })
                   }}
                 >
@@ -241,13 +224,13 @@ export function SubagentsTab(props: { sessionID: string }) {
                     >
                       {entry.prefix}
                       {entry.agent}: {entry.title}
+                      <Show when={entry.status === "running"}>
+                        <span style={{ fg: active() ? theme.text.action.primary.focused : theme.text.muted }}>
+                          {" [running]"}
+                        </span>
+                      </Show>
                     </text>
                   </box>
-                  <Show when={status()}>
-                    <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
-                      {status()}
-                    </text>
-                  </Show>
                 </box>
               )
             }}

@@ -33,7 +33,7 @@ afterAll(() => state[Symbol.asyncDispose]())
 const shells = [shell("sh-a", "bun test"), shell("sh-b", "bun dev"), shell("sh-c", "python3 - <<'PY'\nimport json")]
 
 async function renderComposer(
-  defaultTab: "subagents" | "shell",
+  defaultTab: "subagents" | "shell" | "terminals",
   keybinds: Partial<TuiKeybind.Keybinds>,
   focusedTextarea = false,
 ) {
@@ -97,7 +97,16 @@ async function renderComposer(
         {/* Mirrors the app, which keys the session route by sessionID and remounts it on navigation. */}
         <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
           {(sessionID) => (
-            <Composer sessionID={sessionID} open={true} defaultTab={defaultTab} onClose={() => closed++} />
+            <Composer
+              sessionID={sessionID}
+              open={true}
+              defaultTab={defaultTab}
+              onClose={() => {
+                closed++
+                const parentID = data.session.get(sessionID)?.parentID
+                if (parentID) route.navigate({ type: "session", sessionID: parentID })
+              }}
+            />
           )}
         </Show>
       </>
@@ -152,6 +161,7 @@ async function renderComposer(
     removed,
     viewed,
     route: () => route.data,
+    navigate: (sessionID: string) => route.navigate({ type: "session", sessionID }),
     dispatch: (command: string) => dispatch(command),
     closed: () => closed,
   }
@@ -182,28 +192,110 @@ test("disabled subagent bindings have no component fallbacks", async () => {
   }
 })
 
-test("the inactive subagent filter only changes with its toggle", async () => {
+test("subagents show all statuses, j/k do not wrap, and moving above the first item returns to the parent", async () => {
   const composer = await renderComposer("subagents", {})
   try {
-    expect(composer.app.captureCharFrame()).toContain("First")
-    expect(composer.app.captureCharFrame()).not.toContain("Third")
+    const frame = composer.app.captureCharFrame()
+    expect(frame).toContain("Build: First [running]")
+    expect(frame).toContain("Build: Second [running]")
+    expect(frame).toContain("Build: Third")
+    expect(frame).not.toContain("show active")
+    expect(frame).not.toContain("show inactive")
+    expect(frame).not.toContain("tabs")
 
-    composer.app.mockInput.pressKey("a", { ctrl: true })
+    for (const [key, sessionID] of [
+      ["j", "child-b"],
+      ["j", "child-c"],
+      ["j", "child-c"],
+      ["k", "child-b"],
+      ["k", "child-a"],
+    ] as const) {
+      const current = composer.route()
+      composer.app.mockInput.pressKey(key)
+      await composer.app.renderOnce()
+      expect(composer.route()).toEqual(current)
+      expect(composer.closed()).toBe(0)
+      composer.app.mockInput.pressEnter()
+      expect(composer.route()).toMatchObject({ type: "session", sessionID })
+      await composer.app.renderOnce()
+    }
+
+    composer.app.mockInput.pressArrow("up")
+    expect(composer.closed()).toBe(1)
+    expect(composer.route()).toMatchObject({ type: "session", sessionID: "parent" })
     await composer.app.renderOnce()
-    expect(composer.app.captureCharFrame()).toContain("Third")
-    expect(composer.app.captureCharFrame()).not.toContain("First")
+    composer.navigate("child-a")
+    await composer.app.renderOnce()
+    composer.app.mockInput.pressKey("k")
+    expect(composer.closed()).toBe(2)
+    expect(composer.route()).toMatchObject({ type: "session", sessionID: "parent" })
+  } finally {
+    composer.app.renderer.destroy()
+  }
+})
 
-    composer.app.mockInput.pressEnter()
+test("h/l cycle the viewed subagent while left/right only switch tabs", async () => {
+  const composer = await renderComposer("subagents", {})
+  try {
+    for (const [highlight, key, sessionID] of [
+      ["j", "h", "child-a"], // Root enters the first child, not the highlighted second child.
+      ["j", "h", "child-b"],
+      ["k", "l", "child-a"],
+      [undefined, "l", "child-c"],
+      [undefined, "h", "child-a"],
+    ] as const) {
+      if (highlight) {
+        composer.app.mockInput.pressKey(highlight)
+        await composer.app.renderOnce()
+      }
+      composer.app.mockInput.pressKey(key)
+      expect(composer.route()).toMatchObject({ type: "session", sessionID })
+      await composer.app.renderOnce()
+    }
+
+    composer.navigate("parent")
+    await composer.app.renderOnce()
+    composer.app.mockInput.pressKey("l")
     expect(composer.route()).toMatchObject({ type: "session", sessionID: "child-c" })
     await composer.app.renderOnce()
-    expect(composer.app.captureCharFrame()).toContain("Third")
-    expect(composer.app.captureCharFrame()).toContain("show active")
-    expect(composer.app.captureCharFrame()).not.toContain("First")
 
-    composer.app.mockInput.pressKey("a", { ctrl: true })
+    composer.app.mockInput.pressArrow("right")
     await composer.app.renderOnce()
-    expect(composer.app.captureCharFrame()).toContain("First")
-    expect(composer.app.captureCharFrame()).not.toContain("Third")
+    expect(composer.app.captureCharFrame()).toContain("No shell commands")
+    composer.app.mockInput.pressKey("h")
+    composer.app.mockInput.pressKey("l")
+    await composer.app.renderOnce()
+    expect(composer.route()).toMatchObject({ type: "session", sessionID: "child-c" })
+    expect(composer.app.captureCharFrame()).toContain("No shell commands")
+
+    composer.app.mockInput.pressArrow("left")
+    await composer.app.renderOnce()
+    expect(composer.route()).toMatchObject({ type: "session", sessionID: "child-c" })
+    expect(composer.app.captureCharFrame()).toContain("Build: Third")
+    expect(composer.app.captureCharFrame()).not.toContain("bun test")
+  } finally {
+    composer.app.renderer.destroy()
+  }
+})
+
+test("terminal picker falls back to headerless subagents, toggles only shell, and exits with Up", async () => {
+  const composer = await renderComposer("terminals", {})
+  try {
+    const frame = composer.app.captureCharFrame()
+    expect(frame).toContain("Build: First [running]")
+    expect(frame).not.toContain("Subagents")
+    expect(frame).not.toContain("Shell")
+    expect(frame).not.toContain("Terminals")
+    expect(frame).not.toContain("esc")
+
+    composer.app.mockInput.pressArrow("right")
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("bun test")
+    composer.app.mockInput.pressArrow("right")
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("Build: First [running]")
+    composer.app.mockInput.pressArrow("up")
+    expect(composer.closed()).toBe(1)
   } finally {
     composer.app.renderer.destroy()
   }

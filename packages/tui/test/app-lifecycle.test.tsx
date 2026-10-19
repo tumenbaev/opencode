@@ -1530,7 +1530,12 @@ test.skipIf(process.platform === "win32").each(["manual", "select"] as const)(
       expect(setup.renderer.currentFocusedRenderable).toBeInstanceOf(EmbeddedTerminalRenderable)
       setup.mockInput.pressKey("x", { ctrl: true })
       setup.mockInput.pressArrow("down")
-      await setup.waitForFrame((frame) => frame.includes("Subagents") && frame.includes("Terminals"))
+      // Fork: the compact picker omits tab headers and terminals.
+      await setup.waitForFrame(
+        (frame) =>
+          frame.includes("No subagents") &&
+          !(setup.renderer.currentFocusedRenderable instanceof EmbeddedTerminalRenderable),
+      )
       expect(setup.renderer.currentFocusedRenderable).not.toBeInstanceOf(EmbeddedTerminalRenderable)
 
       setup.renderer.destroy()

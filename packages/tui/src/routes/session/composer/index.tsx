@@ -1,12 +1,10 @@
-import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../../../context/theme"
 import { SplitBorder } from "../../../ui/border"
 import { Keymap } from "../../../context/keymap"
 import { SubagentsTab } from "./subagents-tab"
 import { ShellTab } from "./shell-tab"
-import { TerminalsTab } from "./terminals-tab"
 import { ComposerContext, type ComposerTab } from "./context"
 
 export type ComposerProps = {
@@ -14,8 +12,6 @@ export type ComposerProps = {
   open: boolean
   defaultTab?: string
   onClose?: () => void
-  terminals?: boolean
-  visibleTerminalID?: string
 }
 
 export function Composer(props: ComposerProps) {
@@ -27,8 +23,6 @@ export function Composer(props: ComposerProps) {
   })
 
   const tabList = createMemo(() => Object.values(store.tabs))
-  const activeTab = createMemo(() => tabList().find((t) => t.id === store.active))
-  const footerHints = createMemo(() => activeTab()?.hints?.() ?? [])
 
   // Set active tab when opened
   createEffect(() => {
@@ -94,62 +88,8 @@ export function Composer(props: ComposerProps) {
           paddingTop={1}
           paddingBottom={1}
         >
-          <box gap={1}>
-            <box flexDirection="row" justifyContent="space-between" paddingLeft={1}>
-              <Show
-                when={tabList().length > 1}
-                fallback={
-                  <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
-                    {tabList()[0]?.label ?? ""}
-                  </text>
-                }
-              >
-                <box flexDirection="row" gap={2}>
-                  <For each={tabList()}>
-                    {(t) => {
-                      const isActive = createMemo(() => store.active === t.id)
-                      return (
-                        <text
-                          fg={isActive() ? theme.text.base : theme.text.muted}
-                          attributes={isActive() ? TextAttributes.BOLD : undefined}
-                        >
-                          {t.label}
-                        </text>
-                      )
-                    }}
-                  </For>
-                </box>
-              </Show>
-              <text fg={theme.text.muted} onMouseUp={close}>
-                esc
-              </text>
-            </box>
-            <SubagentsTab sessionID={props.sessionID} />
-            <ShellTab sessionID={props.sessionID} />
-            <Show when={props.terminals}>
-              <TerminalsTab sessionID={props.sessionID} visibleTerminalID={props.visibleTerminalID} />
-            </Show>
-            <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
-              <For each={footerHints()}>
-                {(hint) => (
-                  <text>
-                    <span style={{ fg: theme.text.base }}>
-                      <b>{hint.label}</b>{" "}
-                    </span>
-                    <span style={{ fg: theme.text.muted }}>{hint.shortcut}</span>
-                  </text>
-                )}
-              </For>
-              <Show when={tabList().length > 1}>
-                <text>
-                  <span style={{ fg: theme.text.base }}>
-                    <b>tabs</b>{" "}
-                  </span>
-                  <span style={{ fg: theme.text.muted }}>←/→</span>
-                </text>
-              </Show>
-            </box>
-          </box>
+          <SubagentsTab sessionID={props.sessionID} />
+          <ShellTab sessionID={props.sessionID} />
         </box>
       </box>
     </ComposerContext.Provider>
