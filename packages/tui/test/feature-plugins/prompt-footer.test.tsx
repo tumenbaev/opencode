@@ -4,9 +4,9 @@ import { RGBA, TextRenderable, type Renderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { Context } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
-import { PromptFooter } from "../../src/feature-plugins/prompt/footer"
+import { PromptFooter, PromptFooterStatus } from "../../src/feature-plugins/prompt/footer"
 
-test("prompt footer separates simultaneous subagent, shell, and usage status", async () => {
+test("prompt footer places usage before subagent and shell counters", async () => {
   const color = RGBA.fromInts(200, 200, 200)
   const subdued = RGBA.fromInts(100, 100, 100)
   const dispatched: [string, string | undefined][] = []
@@ -43,7 +43,7 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
     },
   } as unknown as Context
   const app = await testRender(
-    () => <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />,
+    () => <PromptFooterStatus context={context} sessionID="session" mode="normal" showDetails={true} />,
     {
       width: 80,
       height: 2,
@@ -52,17 +52,18 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
 
   try {
     await app.renderOnce()
-    expect(app.captureCharFrame()).toContain("ctrl+j 1 subagent · 1 shell · $1.00")
-    expect(app.captureCharFrame()).toContain("ctrl+p commands")
+    expect(app.captureCharFrame()).toContain("$1.00 · ctrl+j 1 subagent · 1 shell")
+    expect(app.captureCharFrame()).not.toContain("ctrl+p commands")
 
-    await app.mockMouse.moveTo(2, 0)
-    const live = app.renderer.root.getChildren()[0]?.getChildren()[0]?.getChildren()[0]
+    const counterX = app.captureCharFrame().split("\n")[0]!.indexOf("ctrl+j") + 1
+    await app.mockMouse.moveTo(counterX, 0)
+    const live = findText(app.renderer.root, "ctrl+j")
     expect(live).toBeInstanceOf(TextRenderable)
     expect((live as TextRenderable).fg.toInts()).toEqual(color.toInts())
 
-    await app.mockMouse.click(2, 0)
-    await app.mockMouse.click(9, 0)
-    await app.mockMouse.click(23, 0)
+    await app.mockMouse.click(counterX, 0)
+    await app.mockMouse.click(counterX + 7, 0)
+    await app.mockMouse.click(counterX + 20, 0)
     expect(dispatched).toEqual([
       ["session.child.first", "subagents"],
       ["session.child.first", "subagents"],
@@ -71,9 +72,9 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
 
     setActiveSubagent(false)
     await app.renderOnce()
-    expect(app.captureCharFrame()).toContain("ctrl+j 1 shell · $1.00")
-    await app.mockMouse.click(2, 0)
-    await app.mockMouse.click(9, 0)
+    expect(app.captureCharFrame()).toContain("$1.00 · ctrl+j 1 shell")
+    await app.mockMouse.click(counterX, 0)
+    await app.mockMouse.click(counterX + 7, 0)
     expect(dispatched.slice(-2)).toEqual([
       ["session.child.first", "shell"],
       ["session.child.first", "shell"],
@@ -130,6 +131,7 @@ test("prompt footer can hide details", async () => {
   const app = await testRender(
     () => (
       <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
+        <PromptFooterStatus context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
         <PromptFooter context={context} sessionID={sessionID()} mode="normal" showDetails={showDetails()} />
       </box>
     ),
@@ -142,6 +144,7 @@ test("prompt footer can hide details", async () => {
   try {
     await app.renderOnce()
     expect(app.captureCharFrame()).toContain("1.0K (10%) · $1.00")
+    expect(app.captureCharFrame()).not.toContain("shift+tab agents")
     expect(app.captureCharFrame()).toContain("ctrl+p commands")
 
     setShowDetails(false)
@@ -149,6 +152,7 @@ test("prompt footer can hide details", async () => {
     const frame = app.captureCharFrame()
     expect(frame).not.toContain("1.0K (10%)")
     expect(frame).not.toContain("$1.00")
+    expect(frame).not.toContain("shift+tab agents")
     expect(frame).not.toContain("ctrl+p commands")
 
     setSessionID(undefined)
@@ -183,7 +187,7 @@ test("prompt footer shows the session's goal without its objective and opens it 
         feedback: { warning: { base: warning }, success: { base: muted } },
       },
     },
-    keymap: { shortcuts: () => [] },
+    keymap: { shortcuts: (id: string) => (id === "session.child.first" ? ["ctrl+j"] : []) },
     ui: { dialog: { show: (render: unknown) => dialogs.push(render) }, toast: { show: () => {} } },
     client: {
       rpc: () => ({
@@ -194,8 +198,8 @@ test("prompt footer shows the session's goal without its objective and opens it 
     data: {
       on: () => () => {},
       session: {
-        family: () => ["session"],
-        status: () => "idle",
+        family: () => ["session", "child"],
+        status: (id: string) => (id === "child" ? "running" : "idle"),
         get: () => ({ id: "session", location: { directory: "/workspace" } }),
         cost: () => 0,
         message: { list: () => [] },
@@ -204,8 +208,9 @@ test("prompt footer shows the session's goal without its objective and opens it 
       location: { model: { list: () => [] } },
     },
   } as unknown as Context
+  const [showDetails, setShowDetails] = createSignal(true)
   const app = await testRender(
-    () => <PromptFooter context={context} sessionID="session" mode="normal" showDetails={true} />,
+    () => <PromptFooterStatus context={context} sessionID="session" mode="normal" showDetails={showDetails()} />,
     { width: 80, height: 2 },
   )
 
@@ -214,15 +219,20 @@ test("prompt footer shows the session's goal without its objective and opens it 
     await fetched
     await app.renderOnce()
     const frame = app.captureCharFrame()
-    expect(frame).toContain("◎ goal")
+    expect(frame).toContain("ctrl+j 1 subagent · ◎ goal")
     // The objective and any round count live in the dialog, not the footer.
     expect(frame).not.toContain("Make the test suite pass")
     expect(frame).not.toMatch(/\d+\/\d+/)
     expect(findText(app.renderer.root, "◎ goal")?.fg.toInts()).toEqual(muted.toInts())
 
-    await app.mockMouse.click(2, 0)
+    const goalX = frame.split("\n")[0]!.indexOf("◎ goal") + 1
+    await app.mockMouse.click(goalX, 0)
     expect(dialogs).toHaveLength(1)
     await app.mockMouse.moveTo(70, 1)
+
+    setShowDetails(false)
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("ctrl+j 1 subagent · ◎ goal")
 
     // Then it follows the plugin's changes for this Session only.
     const change = (sessionID: string, next: unknown) =>
