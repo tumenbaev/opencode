@@ -121,7 +121,11 @@ const subagentPluginSupervisor = makeLocationNode({
   layer: Layer.effectDiscard(
     Effect.gen(function* () {
       const hooks = yield* PluginHooks.Service
-      yield* registerToolPlugin(SubagentTool.Plugin, {}, (name, callback) => hooks.register("tool", name, callback))
+      yield* registerToolPlugin(
+        SubagentTool.Plugin,
+        { session: { hook: (name, callback) => hooks.register("session", name, callback) } },
+        (name, callback) => hooks.register("tool", name, callback),
+      )
     }),
   ),
   deps: [
@@ -412,6 +416,27 @@ describe("SubagentTool", () => {
           const locations = yield* LocationServiceMap.Service
           const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
           expect((yield* registry.snapshot()).definitions.map((tool) => tool.name)).toContain(SubagentTool.name)
+          const hooks = yield* PluginHooks.Service.pipe(Effect.provide(locations.get(parent.location)))
+          for (const kind of ["context", "compaction", "generate"] as const) {
+            const definitions = (yield* registry.snapshot()).definitions
+            const event = yield* hooks.trigger("session", kind, {
+              sessionID: parent.id,
+              agent: toolIdentity.agent,
+              model: parentModel,
+              system: [],
+              messages: [],
+              options: {},
+              tools: Object.fromEntries(
+                definitions.map((tool) => [tool.name, { description: tool.description, input: tool.inputSchema }]),
+              ),
+            })
+            expect(Object.keys(event.tools[SubagentTool.name].input.properties ?? {})).toEqual([
+              "agent",
+              "description",
+              "prompt",
+              "sessionID",
+            ])
+          }
           expect(
             yield* executeTool(registry, {
               sessionID: parent.id,

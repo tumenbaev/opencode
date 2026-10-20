@@ -279,6 +279,13 @@ export const Plugin = {
       Effect.gen(function* () {
         const tool = event.tools[name]
         if (!tool) return
+        // Keep background execution available internally, but do not advertise it to the model.
+        tool.input = {
+          ...tool.input,
+          properties: Object.fromEntries(
+            Object.entries(tool.input.properties ?? {}).filter(([key]) => key !== "background"),
+          ),
+        }
         const selected = yield* agents.resolve(event.agent)
         if (!selected) return
         const available = (yield* agents.list())
