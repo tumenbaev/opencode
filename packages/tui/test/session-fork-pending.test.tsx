@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
+import { InputRenderable, TextareaRenderable } from "@opentui/core"
 import { createAppFixture } from "./fixture/app"
+import { waitForHighlightedFrame } from "./fixture/frame"
 import { directory, json } from "./fixture/tui-client"
 
 const session = {
@@ -23,6 +25,85 @@ const messages = [
   },
   { type: "user", id: "msg_a", text: "First prompt", time: { created: 1 } },
 ]
+
+test.each([
+  ["/timeline", "Timeline"],
+  ["/fork", "Fork session"],
+])("%s loads older history before exposing its searchable picker", async (command, title) => {
+  const older = Promise.withResolvers<Response>()
+  const requested = Promise.withResolvers<void>()
+  const oldest = Promise.withResolvers<Response>()
+  const oldestRequested = Promise.withResolvers<void>()
+  await using setup = await createAppFixture({
+    width: 112,
+    height: 34,
+    config: { animations: false, tabs: { enabled: false } },
+    args: { sessionID: session.id },
+    fetch: (url) => {
+      if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
+      if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+      if (url.pathname === `/api/session/${session.id}/message`) {
+        if (url.searchParams.get("cursor") === "older") {
+          requested.resolve()
+          return older.promise
+        }
+        if (url.searchParams.get("cursor") === "oldest") {
+          oldestRequested.resolve()
+          return oldest.promise
+        }
+        // A complete newest turn must not trigger group-boundary enrichment.
+        return json({ data: messages, cursor: { next: "older" } })
+      }
+      if (/^\/api\/session\/ses_fork_pending\/(inbox|permission)$/.test(url.pathname))
+        return json({ data: [], cursor: {} })
+      return undefined
+    },
+  })
+
+  try {
+    await setup.ready
+    await waitForHighlightedFrame(
+      setup,
+      (frame) =>
+        frame.includes("First answer") && setup.renderer.currentFocusedRenderable instanceof TextareaRenderable,
+    )
+    await setup.mockInput.typeText(command)
+    setup.mockInput.pressEnter()
+    await setup.waitForFrame((frame) => frame.includes(title) && frame.includes("Loading history…"))
+    await requested.promise
+    expect(setup.renderer.currentFocusedRenderable).not.toBeInstanceOf(InputRenderable)
+    expect(setup.captureCharFrame().match(/First prompt/g)).toHaveLength(1)
+    expect(setup.captureCharFrame()).not.toContain("Full session")
+
+    older.resolve(
+      json({
+        data: [{ type: "user", id: "msg_1", text: "Older history prompt", time: { created: 0 } }],
+        cursor: { next: "oldest" },
+      }),
+    )
+    await oldestRequested.promise
+    await setup.waitForFrame((frame) => frame.includes(title) && frame.includes("Loading history…"))
+    expect(setup.renderer.currentFocusedRenderable).not.toBeInstanceOf(InputRenderable)
+    expect(setup.captureCharFrame()).not.toContain("Full session")
+
+    oldest.resolve(
+      json({
+        data: [{ type: "user", id: "msg_0", text: "Oldest history prompt", time: { created: -1 } }],
+        cursor: {},
+      }),
+    )
+    await setup.waitForFrame(
+      (frame) =>
+        frame.includes("Oldest history prompt") && setup.renderer.currentFocusedRenderable instanceof InputRenderable,
+    )
+    await setup.mockInput.typeText("Oldest history")
+    await setup.waitForFrame((frame) => frame.includes("Oldest history prompt") && !frame.includes("Loading history…"))
+    expect((setup.renderer.currentFocusedRenderable as InputRenderable).value).toBe("Oldest history")
+  } finally {
+    older.resolve(json({ data: [], cursor: {} }))
+    oldest.resolve(json({ data: [], cursor: {} }))
+  }
+})
 
 test("choosing a row in /fork shows the pending view until the fork finishes", async () => {
   const fork = Promise.withResolvers<Response>()

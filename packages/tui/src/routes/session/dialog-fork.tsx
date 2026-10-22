@@ -9,6 +9,7 @@ import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
 import { Locale } from "../../util/locale"
 import { projectedPromptInput } from "../../prompt/codec"
+import { DialogHistory } from "./dialog-history"
 
 export function DialogFork(props: { sessionID: string; messageID?: string; onMove?: (messageID?: string) => void }) {
   const data = useData()
@@ -79,7 +80,9 @@ export function DialogFork(props: { sessionID: string; messageID?: string; onMov
         </DialogLayout>
       }
     >
-      <DialogSelect onMove={(option) => props.onMove?.(option.value)} title="Fork session" options={options()} />
+      <DialogHistory sessionID={props.sessionID} title="Fork session">
+        <DialogSelect onMove={(option) => props.onMove?.(option.value)} title="Fork session" options={options()} />
+      </DialogHistory>
     </Show>
   )
 }

@@ -5,6 +5,7 @@ import { Locale } from "../../util/locale"
 import { DialogMessage } from "./dialog-message"
 import { useDialog } from "../../ui/dialog"
 import type { PromptInfo } from "../../prompt/history"
+import { DialogHistory } from "./dialog-history"
 
 export function DialogTimeline(props: {
   sessionID: string
@@ -39,12 +40,14 @@ export function DialogTimeline(props: {
   })
 
   return (
-    <DialogSelect
-      onMove={(option) => props.onMove(option.value)}
-      title="Timeline"
-      searchInTitle
-      titlePlaceholder="Search timeline"
-      options={options()}
-    />
+    <DialogHistory sessionID={props.sessionID} title="Timeline">
+      <DialogSelect
+        onMove={(option) => props.onMove(option.value)}
+        title="Timeline"
+        searchInTitle
+        titlePlaceholder="Search timeline"
+        options={options()}
+      />
+    </DialogHistory>
   )
 }
