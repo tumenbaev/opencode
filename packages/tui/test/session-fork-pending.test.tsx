@@ -77,7 +77,15 @@ test.each([
 
     older.resolve(
       json({
-        data: [{ type: "user", id: "msg_1", text: "Older history prompt", time: { created: 0 } }],
+        data: [
+          {
+            ...messages[0],
+            id: "msg_3",
+            snapshot: { start: "a".repeat(40), end: "b".repeat(40), files: ["src/example.ts"] },
+          },
+          { ...messages[0], id: "msg_2", snapshot: { files: [] } },
+          { type: "user", id: "msg_1", text: "Older history prompt", time: { created: 0 } },
+        ],
         cursor: { next: "oldest" },
       }),
     )
@@ -96,6 +104,18 @@ test.each([
       (frame) =>
         frame.includes("Oldest history prompt") && setup.renderer.currentFocusedRenderable instanceof InputRenderable,
     )
+    const lines = setup.captureCharFrame().split("\n")
+    const marked = lines.filter((line) => line.includes("⎌"))
+    if (command === "/timeline") {
+      expect(marked).toHaveLength(1)
+      expect(marked[0]).toContain("Older history prompt")
+      const marker = () =>
+        setup.captureSpans().lines.flatMap((line) => line.spans).find((span) => span.text.includes("⎌"))!
+      const idle = marker()
+      setup.mockInput.pressArrow("down")
+      await setup.waitForFrame(() => !marker().bg.equals(idle.bg))
+      expect(marker().fg.toInts()).not.toEqual(idle.fg.toInts())
+    } else expect(marked).toEqual([])
     await setup.mockInput.typeText("Oldest history")
     await setup.waitForFrame((frame) => frame.includes("Oldest history prompt") && !frame.includes("Loading history…"))
     expect((setup.renderer.currentFocusedRenderable as InputRenderable).value).toBe("Oldest history")

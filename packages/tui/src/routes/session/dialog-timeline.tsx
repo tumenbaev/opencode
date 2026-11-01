@@ -5,10 +5,12 @@ import { Locale } from "../../util/locale"
 import { DialogMessage } from "./dialog-message"
 import { useDialog } from "../../ui/dialog"
 import { DialogHistory } from "./dialog-history"
+import { useTheme } from "../../context/theme"
 
 export function DialogTimeline(props: { sessionID: string; onMove: (messageID: string) => void }) {
   const data = useData()
   const dialog = useDialog()
+  const theme = useTheme().surface("dialog")
 
   onMount(() => {
     dialog.setSize("large")
@@ -18,6 +20,15 @@ export function DialogTimeline(props: { sessionID: string; onMove: (messageID: s
     const messages = data.session.message.list(props.sessionID)
     const result = [] as DialogSelectOption<string>[]
     for (const message of messages) {
+      if (message.type === "assistant" && message.snapshot?.files?.length) {
+        const option = result.at(-1)
+        if (option) {
+          option.gutter = (color) => (
+            <text fg={color === theme.text.action.primary.focused ? color : theme.text.muted}>⎌</text>
+          )
+          option.detail = "This message changed files."
+        }
+      }
       if (message.type !== "user") continue
       result.push({
         title: message.text.replace(/\n/g, " "),
