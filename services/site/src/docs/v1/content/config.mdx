@@ -425,18 +425,16 @@ The following example applies to OpenCode 2 only:
 
 ### Image attachments
 
-OpenCode normalizes image attachments before sending them to the model. By default, images are resized when they exceed `2000x2000` pixels or `5242880` base64 bytes.
+OpenCode normalizes image attachments before sending them to the model. By default, images are resized when they exceed `5242880` base64 bytes, with no width or height limit. Providers may enforce their own dimension limits.
 
-Configure image attachment limits with the `attachment.image` option:
+Configure image attachment limits with the `media.image` option:
 
 ```json title="opencode.json"
 {
   "$schema": "https://opencode.ai/config.json",
-  "attachment": {
+  "media": {
     "image": {
       "auto_resize": true,
-      "max_width": 2000,
-      "max_height": 2000,
       "max_base64_bytes": 5242880
     }
   }
@@ -444,8 +442,8 @@ Configure image attachment limits with the `attachment.image` option:
 ```
 
 - `auto_resize` - Resize images that exceed the configured limits before provider requests. Set to `false` to reject oversized images instead.
-- `max_width` - Maximum image width in pixels before resizing or rejection.
-- `max_height` - Maximum image height in pixels before resizing or rejection.
+- `max_width` - Optional maximum image width in pixels before resizing or rejection. Unlimited by default.
+- `max_height` - Optional maximum image height in pixels before resizing or rejection. Unlimited by default.
 - `max_base64_bytes` - Maximum encoded image payload size. This is the base64 payload size, not the original file size.
 
 If an image still cannot fit after resizing, OpenCode omits oversized tool-result images or fails oversized user-provided images with an image size error.

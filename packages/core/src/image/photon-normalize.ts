@@ -15,8 +15,8 @@ export type Size = {
   readonly width: number
   readonly height: number
   readonly bytes: number
-  readonly maxWidth: number
-  readonly maxHeight: number
+  readonly maxWidth: number | undefined
+  readonly maxHeight: number | undefined
   readonly maxBytes: number
 }
 // Unchanged lets the worker skip copying the caller's base64 back.
@@ -79,7 +79,9 @@ export function normalize(photon: Photon, content: Content, limits: Readonly<Lim
       maxHeight: limits.maxHeight,
       maxBytes: limits.maxBase64Bytes,
     }
-    const fits = width <= limits.maxWidth && height <= limits.maxHeight && bytes <= limits.maxBase64Bytes
+    const maxWidth = limits.maxWidth ?? Infinity
+    const maxHeight = limits.maxHeight ?? Infinity
+    const fits = width <= maxWidth && height <= maxHeight && bytes <= limits.maxBase64Bytes
     const smallPng = bytes <= PNG_PASSTHROUGH_MAX_BASE64_BYTES || width * height <= SMALL_PNG_MAX_PIXELS
     if (fits && (!limits.autoResize || content.mime !== "image/png" || smallPng)) return { _tag: "Unchanged" }
     if (!limits.autoResize) return sizeError
@@ -100,7 +102,7 @@ export function normalize(photon: Photon, content: Content, limits: Readonly<Lim
           }
         : { _tag: "Unchanged" }
     }
-    const scale = Math.min(1, limits.maxWidth / width, limits.maxHeight / height)
+    const scale = Math.min(1, maxWidth / width, maxHeight / height)
     const sizes = Array.from({ length: 32 }).reduce<Array<{ width: number; height: number }>>((acc) => {
       const previous = acc.at(-1) ?? {
         width: Math.max(1, Math.round(width * scale)),
