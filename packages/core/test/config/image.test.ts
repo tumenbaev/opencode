@@ -36,7 +36,7 @@ describe("ConfigImagePlugin.Plugin", () => {
       yield* bus.publish(Event.Updated, {})
       yield* waitUntil(
         limits(image).pipe(
-          Effect.map((current) => current.maxWidth === 700 && current.maxHeight === 2_000 && current.maxBytes === 1),
+          Effect.map((current) => current.maxWidth === 700 && current.maxHeight === undefined && current.maxBytes === 1),
         ),
       )
     }).pipe(
@@ -62,7 +62,7 @@ describe("ConfigImagePlugin.Plugin", () => {
         Effect.provideService(Config.Service, config),
       )
 
-      expect(yield* limits(image)).toEqual({ maxWidth: 700, maxHeight: 2_000, maxBytes: 1 })
+      expect(yield* limits(image)).toEqual({ maxWidth: 700, maxHeight: undefined, maxBytes: 1 })
     }),
   )
 })

@@ -27,6 +27,9 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
+import { Command } from "@opencode/core/command"
+import { Mcp } from "@opencode/core/mcp/index"
+import { CommandPlugin } from "@opencode/core/plugin/command"
 import { Event } from "@opencode/schema/event"
 import { App } from "@opencode/core/app"
 import { Permission } from "@opencode/core/permission"
@@ -82,6 +85,8 @@ import { TestClock } from "effect/testing"
 import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 import { promptLocationNode } from "./fixture/prompt-location"
+import { emptyMcp } from "./fixture/mcp"
+import { location } from "./fixture/location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Expected } from "./lib/session-message"
 import { permissionLayer } from "./lib/permission"
@@ -1426,6 +1431,93 @@ describe("SessionRunnerLLM", () => {
 
     expect(s.requests).toHaveLength(1)
     expect(yield* s.messages).toMatchObject([{ id: message.id, type: "user", text: "Run automatically" }])
+  })
+
+  scenario("MCP command sends its full task, existing attachment and image in the first model request", function* (s) {
+    const command = Context.get(yield* Layer.build(Command.layer), Command.Service)
+    const server = Mcp.ServerName.make("test")
+    const task = "Inspect the whole page and explain the footer"
+    const image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    const context = "Existing context: check the footer contrast."
+    let fetched = false
+    yield* CommandPlugin.Plugin.effect(
+      host({
+        command: {
+          list: () => Effect.die("unused command.list"),
+          transform: command.transform,
+          reload: command.reload,
+        },
+        session: { prompt: s.session.prompt },
+      }),
+    ).pipe(
+      Effect.provideService(Location.Service, location({ directory: AbsolutePath.make("/project") })),
+      Effect.provideService(Mcp.Service, {
+        ...emptyMcp,
+        prompts: () => Effect.succeed([{ server, name: "inspect", arguments: [{ name: "task" }] }]),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            expect(input).toEqual({ server, name: "inspect", args: { task } })
+            expect(s.requests).toHaveLength(0)
+            yield* Effect.yieldNow
+            expect(s.requests).toHaveLength(0)
+            fetched = true
+            return {
+              server,
+              name: "inspect",
+              messages: [
+                { role: "user" as const, content: { type: "text" as const, text: input.args!.task! } },
+                { role: "user" as const, content: { type: "image" as const, mimeType: "image/png", data: image } },
+              ],
+            }
+          }),
+      }),
+    )
+    yield* s.llm.push(TestLLM.text("The footer needs more contrast.", "inspection"))
+    expect(s.requests).toHaveLength(0)
+    yield* command.execute({
+      name: "test:inspect",
+      invocation: {
+        sessionID,
+        prompt: {
+          text: task,
+          files: [{ uri: `data:text/plain;base64,${Buffer.from(context).toString("base64")}`, name: "context.txt" }],
+        },
+        delivery: "steer",
+      },
+    })
+    yield* s.session.wait(sessionID)
+
+    expect(fetched).toBe(true)
+    expect(s.requests).toHaveLength(1)
+    const request = s.requests[0]!
+    expect(request.messages).toMatchObject([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: task },
+          { type: "text", text: `\n\nAttached file: context.txt\n\n${context}` },
+          { type: "media", filename: "mcp-image-1.png", media: { mediaType: "image/png" } },
+        ],
+      },
+    ])
+    const media = request.messages[0]!.content.find((part) => part.type === "media")
+    expect(media?.type).toBe("media")
+    if (media?.type === "media") {
+      expect(Buffer.from(media.media.inline()?.base64 ?? "", "base64")).toEqual(Buffer.from(image, "base64"))
+    }
+    const compiled = yield* compileRequest(request)
+    expect(compiled.body).toMatchObject({
+      messages: expect.arrayContaining([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: task },
+            { type: "text", text: `\n\nAttached file: context.txt\n\n${context}` },
+            { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } },
+          ],
+        },
+      ]),
+    })
   })
 
   scenario("runs a follow-up when synthetic input arrives during an active continuation", function* (s) {

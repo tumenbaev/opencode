@@ -23,19 +23,19 @@ export class SizeError extends Schema.TaggedError<SizeError>()("Image.SizeError"
   width: Schema.Number,
   height: Schema.Number,
   bytes: Schema.Number,
-  maxWidth: Schema.Number,
-  maxHeight: Schema.Number,
+  maxWidth: Schema.optional(Schema.Number),
+  maxHeight: Schema.optional(Schema.Number),
   maxBytes: Schema.Number,
 }) {
   override get message() {
-    return `Image ${this.resource} is ${this.width}x${this.height} with base64 size ${this.bytes}, exceeding configured limits ${this.maxWidth}x${this.maxHeight}/${this.maxBytes} bytes`
+    return `Image ${this.resource} is ${this.width}x${this.height} with base64 size ${this.bytes}, exceeding configured limits ${this.maxWidth ?? "unlimited"}x${this.maxHeight ?? "unlimited"}/${this.maxBytes} bytes`
   }
 }
 
 export type Limits = {
   autoResize: boolean
-  maxWidth: number
-  maxHeight: number
+  maxWidth?: number
+  maxHeight?: number
   maxBase64Bytes: number
 }
 
@@ -62,8 +62,8 @@ const layer = Layer.effect(
       name: "image",
       initial: () => ({
         autoResize: true,
-        maxWidth: 2_000,
-        maxHeight: 2_000,
+        maxWidth: undefined,
+        maxHeight: undefined,
         maxBase64Bytes: 5 * 1024 * 1024,
       }),
       editor: (editor) => ({

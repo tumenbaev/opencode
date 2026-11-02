@@ -2,6 +2,7 @@ export * as CommandPlugin from "./command.js"
 
 import { define } from "@opencode/plugin/effect/plugin"
 import { Effect, Stream } from "effect"
+import { extension } from "mime-types"
 import { Bus } from "../bus.js"
 import { Location } from "../location.js"
 import { Mcp } from "../mcp/index.js"
@@ -63,10 +64,14 @@ export const Plugin = define({
                 server: prompt.server,
                 name: prompt.name,
                 args: Object.fromEntries(
-                  (prompt.arguments ?? []).map((argument, index) => [argument.name, args[index] ?? ""]),
+                  (prompt.arguments ?? []).map((argument, index, declared) => [
+                    argument.name,
+                    index === declared.length - 1 ? args.slice(index).join(" ") : (args[index] ?? ""),
+                  ]),
                 ),
               })
               if (!result) return yield* Effect.fail(new Error(`MCP prompt not found: ${prompt.server}:${prompt.name}`))
+              const images = result.messages.flatMap(({ content }) => (content.type === "image" ? [content] : []))
               yield* ctx.session.prompt({
                 ...input.prompt,
                 sessionID: input.sessionID,
@@ -74,6 +79,15 @@ export const Plugin = define({
                   .map((message) => promptMessageText(message.content))
                   .join("\n")
                   .trim(),
+                files: images.length
+                  ? [
+                      ...(input.prompt.files ?? []),
+                      ...images.map((image, index) => ({
+                        uri: `data:${image.mimeType};base64,${image.data}`,
+                        name: `mcp-image-${index + 1}.${extension(image.mimeType) || "bin"}`,
+                      })),
+                    ]
+                  : input.prompt.files,
                 delivery: input.delivery,
               })
             }).pipe(Effect.asVoid),
