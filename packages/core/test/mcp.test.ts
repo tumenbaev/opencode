@@ -133,6 +133,8 @@ function resourceServer(
     roots?: boolean
     /** Advertises MCP Events; answer its requests through `respond`. */
     events?: boolean
+    /** Reject prompt execution with this server-side error. */
+    promptError?: Error
     respond?: (request: Request) => Response | undefined | Promise<Response | undefined>
   } = {},
 ) {
@@ -285,11 +287,12 @@ function resourceServer(
           })
         }
         protocol.setRequestHandler("prompts/list", () => Promise.resolve({ prompts: [{ name: "greet" }] }))
-        protocol.setRequestHandler("prompts/get", (request) =>
-          Promise.resolve({
+        protocol.setRequestHandler("prompts/get", (request) => {
+          if (input.promptError) return Promise.reject(input.promptError)
+          return Promise.resolve({
             messages: [{ role: "user", content: { type: "text", text: `hi ${request.params.arguments?.name}` } }],
-          }),
-        )
+          })
+        })
         if (input.resources !== false) {
           protocol.setRequestHandler("resources/list", (request) => {
             state.resourceLists += 1
@@ -846,6 +849,25 @@ test("lists paginated prompts and invokes them through the MCP client", async ()
   expect(result.result).toEqual({ messages: [{ role: "user", content: { type: "text", text: "Effect" } }] })
 })
 
+test("preserves MCP prompt execution errors", async () => {
+  const promptError = new Error("Cannot access a chrome-extension:// URL of different extension")
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* resourceServer({ promptError })
+        yield* Effect.gen(function* () {
+          const service = yield* Mcp.Service
+          yield* settled(service)
+
+          expect((yield* service.prompts()).map((prompt) => prompt.name)).toContain("greet")
+          const error = yield* service.prompt({ server: "resources", name: "greet" }).pipe(Effect.flip)
+          expect(error.message).toContain(promptError.message)
+        }).pipe(Effect.provide(resourceMcpLayer(server.url)))
+      }),
+    ),
+  )
+})
+
 test("spawns local MCP servers through the location environment", async () => {
   const spawns: Array<ChildProcess.Command> = []
   const cwd = path.join(import.meta.dir, "fixture")
@@ -890,6 +912,25 @@ test("reports a local MCP server as failed when the location has no execution pl
         status: "failed",
         error: expect.stringContaining("location has no execution plane"),
       })
+    }).pipe(Effect.provide(resourceMcpLayer(config, undefined, undefined, { environment }))),
+  )
+})
+
+test("reports an unavailable MCP server when invoking a prompt", async () => {
+  const config = new ConfigMCP.Local({ type: "local", command: ["example-mcp"] })
+  const driver = Environment.makeMemoryDriver()
+  const environment = Layer.succeed(
+    Environment.Service,
+    Environment.Service.of({ files: Environment.makeFiles(driver), spawner: EnvironmentUnavailable.spawner }),
+  )
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const service = yield* Mcp.Service
+      yield* settled(service)
+      const error = yield* service.prompt({ server: "resources", name: "greet" }).pipe(Effect.flip)
+      expect(error.message).toContain("location has no execution plane")
+      expect(error.message).toContain('MCP server "resources" is not connected')
     }).pipe(Effect.provide(resourceMcpLayer(config, undefined, undefined, { environment }))),
   )
 })
