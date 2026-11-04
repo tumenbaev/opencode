@@ -291,12 +291,15 @@ const layer = Layer.effect(
             : active
           const codeModeTools = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode !== false))
           const names = Array.from(codeModeTools.keys()).join("\0")
-          // Discovery is immutable for a registry revision and visible tool set. Keep executors
+          const fetch = !whollyDisabled("webfetch", rules)
+          // Discovery is immutable for a registry revision, visible tool set, and runtime capabilities. Keep executors
           // fresh, but share the inventory, whose prepared runtime and much larger rendered catalog
           // are cached by identity, and the native Code Mode definitions across steps.
           const cached =
-            catalog?.data === data && catalog.names === names && catalog.full === full ? catalog : undefined
-          const codeModeInventory = cached?.inventory ?? { tools: codeModeTools, namespaces: data.namespaces }
+            catalog?.data === data && catalog.names === names && catalog.full === full && catalog.inventory.fetch === fetch
+              ? catalog
+              : undefined
+          const codeModeInventory = cached?.inventory ?? { tools: codeModeTools, namespaces: data.namespaces, fetch }
           const describeTool =
             codeModeEnabled && !whollyDisabled("describe", rules) ? CodeModeTool.describe(codeModeInventory) : undefined
           const codeModeTool = codeModeEnabled

@@ -87,17 +87,15 @@ export const services = Effect.map(
 export type Inventory = {
   readonly tools: ReadonlyMap<string, Info>
   readonly namespaces?: ReadonlyMap<string, ToolNamespace>
+  readonly fetch?: boolean
 }
 
-// Invariant model-facing guidance; the changing tool catalog is delivered through Instructions. With `full_codemode`,
-// the runtime also has Bun's file APIs.
-const description = (full: boolean) =>
+// Model-facing guidance follows the runtime's capabilities; the tool catalog is delivered through Instructions.
+const description = (fetch: boolean, full: boolean) =>
   [
-    "Run JavaScript in a confined Code Mode runtime to script tool calls and HTTP requests and compose their results.",
+    `Run JavaScript in a confined Code Mode runtime to script tool calls${fetch ? " and HTTP requests" : ""} and compose their results.`,
     "Write plain JavaScript and send it exactly as written: no code fence, and no JSON or other wrapper around it.",
-    full
-      ? "`fetch` is available for HTTP requests, and Bun's file APIs (`Bun.file`, `Bun.write`, `Bun.Glob`) for files, in place of Node's `fs`. Imports can only load exposed globals by Node module name, not arbitrary packages or files. Timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`."
-      : "`fetch` is available for HTTP requests. Imports can only load exposed globals by Node module name, not arbitrary packages or files. Direct filesystem access and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
+    `${fetch ? "`fetch` is available for HTTP requests. " : ""}${full ? "Bun's file APIs (`Bun.file`, `Bun.write`, `Bun.Glob`) are available for files, in place of Node's `fs`. " : ""}Imports can only load exposed globals by Node module name, not arbitrary packages or files. ${full ? "Timers are unavailable" : "Direct filesystem access and timers are unavailable"}: there is no \`setTimeout\` or sleep. All other external access goes through \`tools\`.`,
     "Inside `execute`, the only callable tools are those explicitly listed in the Code Mode catalog instructions. Ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
     "To obtain a tool’s full description and callable signature, call the native `describe` tool.",
     'Call tools through `tools` using only exact paths and signatures returned by `describe`. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
@@ -132,7 +130,7 @@ export const create = (
 ) => {
   return {
     name: "execute",
-    description: description(services !== undefined),
+    description: description(inventory.fetch !== false, services !== undefined),
     input: CodeMode.Input,
     freeform: { type: "text" },
     output: ExecuteOutput,
@@ -165,9 +163,10 @@ export const create = (
           )
         const result = yield* runtime(inventory)
           .execute(code, undefined, {
-            extensions: services
-              ? [CodeModeFetch.extension, CodeModePath.extension, CodeModeBun.extension]
-              : [CodeModeFetch.extension],
+            extensions: [
+              ...(inventory.fetch === false ? [] : [CodeModeFetch.extension]),
+              ...(services ? [CodeModePath.extension, CodeModeBun.extension] : []),
+            ],
           })
           .pipe(
             Effect.provideService(Run, {
