@@ -76,6 +76,59 @@ const transform = (service: Tool.Interface, tools: Readonly<Record<string, Info>
   )
 
 describe("Tool", () => {
+  it.effect("keeps fetch advertising and availability conditional across permission snapshots", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() })
+      const cases: Array<{ rules: Permission.Ruleset; fetch: boolean }> = [
+        { rules: [], fetch: true },
+        {
+          rules: [
+            { action: "*", resource: "*", effect: "deny" },
+            { action: "execute", resource: "*", effect: "allow" },
+            { action: "echo", resource: "*", effect: "allow" },
+          ],
+          fetch: false,
+        },
+        { rules: [{ action: "webfetch", resource: "*", effect: "deny" }], fetch: false },
+        {
+          rules: [
+            { action: "webfetch", resource: "*", effect: "deny" },
+            { action: "webfetch", resource: "https://example.com/*", effect: "allow" },
+          ],
+          fetch: true,
+        },
+        { rules: [{ action: "webfetch", resource: "*", effect: "ask" }], fetch: true },
+        { rules: [{ action: "webfetch", resource: "https://example.com/*", effect: "deny" }], fetch: true },
+        { rules: [{ action: "webfetch", resource: "*", effect: "deny" }], fetch: false },
+        { rules: [{ action: "webfetch", resource: "*", effect: "allow" }], fetch: true },
+      ]
+      const snapshots: Array<{ snapshot: Tool.Snapshot; fetch: boolean }> = []
+      for (const entry of cases) {
+        const snapshot = yield* service.snapshot(entry.rules)
+        const description = snapshot.definitions.find((tool) => tool.name === "execute")!.description
+        expect(description.includes("`fetch`")).toBe(entry.fetch)
+        expect(description.includes("HTTP requests")).toBe(entry.fetch)
+        snapshots.push({ snapshot, fetch: entry.fetch })
+      }
+      // Captured runtimes must stay aligned with their descriptions even after the cache changes.
+      for (const { snapshot, fetch } of snapshots) {
+        const result = yield* snapshot.execute({
+          ...call("execute"),
+          call: {
+            type: "tool-call",
+            id: "fetch-availability",
+            name: "execute",
+            input: { code: 'return { fetch: typeof fetch, echo: await tools.echo({ text: "ok" }) }' },
+          },
+        })
+        expect(result.output).toMatchObject({
+          output: JSON.stringify({ fetch: fetch ? "function" : "undefined", echo: { text: "ok" } }, null, 2),
+        })
+      }
+    }),
+  )
+
   it.effect("describes exact filtered names without executing targets and preserves the captured inventory", () =>
     Effect.gen(function* () {
       const service = yield* Tool.Service

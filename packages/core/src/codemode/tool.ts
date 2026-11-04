@@ -70,18 +70,20 @@ class Run extends Context.Service<
 export type Inventory = {
   readonly tools: ReadonlyMap<string, Info>
   readonly namespaces?: ReadonlyMap<string, ToolNamespace>
+  readonly fetch?: boolean
 }
 
-// Invariant model-facing guidance; the changing tool catalog is delivered through Instructions.
-const description = [
-  "Run JavaScript in a confined Code Mode runtime to script tool calls and HTTP requests and compose their results.",
-  "`fetch` is available for HTTP requests. Imports can only load exposed globals by Node module name, not arbitrary packages or files. Direct filesystem access and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
-  "Within `{ code }`, the only callable tools are those explicitly listed in the Code Mode catalog instructions. Inside `{ code }`, ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
-  "To obtain a tool’s full description and callable signature, call the native `describe` tool.",
-  'Call tools through `tools` using only exact paths and signatures returned by `describe`. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
-  "Prefer an explicit `return`; if omitted, the final top-level expression becomes the result.",
-  "Await every call whose completion matters; pending calls are interrupted when execution ends. Run independent calls concurrently with `Promise.allSettled`.",
-].join("\n")
+// Model-facing guidance follows the runtime's capabilities; the tool catalog is delivered through Instructions.
+const description = (fetch: boolean) =>
+  [
+    `Run JavaScript in a confined Code Mode runtime to script tool calls${fetch ? " and HTTP requests" : ""} and compose their results.`,
+    `${fetch ? "`fetch` is available for HTTP requests. " : ""}Imports can only load exposed globals by Node module name, not arbitrary packages or files. Direct filesystem access and timers are unavailable: there is no \`setTimeout\` or sleep. All other external access goes through \`tools\`.`,
+    "Within `{ code }`, the only callable tools are those explicitly listed in the Code Mode catalog instructions. Inside `{ code }`, ignore tools shown outside the Code Mode catalog. They are not available in the Code Mode runtime.",
+    "To obtain a tool’s full description and callable signature, call the native `describe` tool.",
+    'Call tools through `tools` using only exact paths and signatures returned by `describe`. Do not infer or normalize tool names; preserve bracket notation such as `tools.<namespace>["tool-name"](input)`.',
+    "Prefer an explicit `return`; if omitted, the final top-level expression becomes the result.",
+    "Await every call whose completion matters; pending calls are interrupted when execution ends. Run independent calls concurrently with `Promise.allSettled`.",
+  ].join("\n")
 
 export const describe = (inventory: Inventory) => {
   const tools = runtime(inventory).catalog
@@ -108,7 +110,7 @@ export const create = (
 ) => {
   return {
     name: "execute",
-    description,
+    description: description(inventory.fetch !== false),
     input: CodeMode.Input,
     output: ExecuteOutput,
     execute: ({ code }, context) =>
@@ -292,9 +294,9 @@ function runtime(inventory: Inventory, engine: "legacy" | "vm" = "legacy") {
   const cached = runtimes[engine].get(inventory)
   if (cached) return cached
   const tools = inventoryTools(inventory)
-  const created = CodeMode.make<typeof tools, [typeof CodeModeFetch.extension]>({
+  const created = CodeMode.make({
     tools,
-    extensions: [CodeModeFetch.extension],
+    extensions: inventory.fetch === false ? [] : [CodeModeFetch.extension],
     hooks: runHooks,
     engine,
   })
