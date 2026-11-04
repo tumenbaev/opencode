@@ -134,6 +134,36 @@ describe("CommandPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("MCP command surfaces prompt execution errors", () =>
+    Effect.gen(function* () {
+      const promptError = new Error("Cannot access a chrome-extension:// URL of different extension")
+      const { command } = yield* setupMcp({
+        messages: [],
+        promptError,
+      })
+      const error = yield* command
+        .execute({
+          name: "test:inspect",
+          invocation: { sessionID: Session.ID.make("ses_test"), prompt: { text: "" }, delivery: "steer" },
+        })
+        .pipe(Effect.flip)
+      expect(error.message).toBe(promptError.message)
+    }),
+  )
+
+  it.effect("MCP command reports not found when the prompt result is missing", () =>
+    Effect.gen(function* () {
+      const { command } = yield* setupMcp({ messages: [], missing: true })
+      const error = yield* command
+        .execute({
+          name: "test:inspect",
+          invocation: { sessionID: Session.ID.make("ses_test"), prompt: { text: "" }, delivery: "steer" },
+        })
+        .pipe(Effect.flip)
+      expect(error.message).toBe("MCP prompt not found: test:inspect")
+    }),
+  )
+
   it.effect("MCP retains existing text collection for roles, resources and audio", () =>
     Effect.gen(function* () {
       const { command, prompts } = yield* setupMcp({
@@ -264,6 +294,8 @@ describe("CommandPlugin.Plugin", () => {
 const setupMcp = Effect.fn(function* (input: {
   arguments?: Mcp.Prompt["arguments"]
   messages: Mcp.PromptResult["messages"]
+  promptError?: Error
+  missing?: boolean
 }) {
   const command = yield* Command.Service
   const server = Mcp.ServerName.make("test")
@@ -306,7 +338,9 @@ const setupMcp = Effect.fn(function* (input: {
           events.push("mcp.prompt")
           calls.push(request)
           yield* Effect.yieldNow
+          if (input.promptError) return yield* Effect.fail(input.promptError)
           events.push("mcp.result")
+          if (input.missing) return undefined
           return { server, name: "inspect", messages: input.messages }
         }),
     }),

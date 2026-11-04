@@ -175,7 +175,7 @@ export interface Interface extends State.Transformable<Editor> {
     readonly server: ServerName | string
     readonly name: string
     readonly args?: Record<string, string>
-  }) => Effect.Effect<PromptResult | undefined, NotFoundError>
+  }) => Effect.Effect<PromptResult | undefined, Error>
   readonly resourceCatalog: () => Effect.Effect<ResourceCatalog>
   readonly resources: (input: { readonly server: ServerName | string }) => Effect.Effect<ResourceCatalog, Error>
   readonly readResource: (input: {
@@ -851,11 +851,12 @@ export const layer = (options?: Options) =>
             .toSorted((a, b) => a.server.localeCompare(b.server) || a.name.localeCompare(b.name))
         }),
         prompt: Effect.fn("MCP.prompt")(function* (input) {
-          const target = yield* connected(ServerName.make(input.server))
-          if (!target.client) return undefined
-          return yield* target.entry.connection
-            .recovering(target.client, (connection) => connection.prompt({ name: input.name, args: input.args }))
-            .pipe(Effect.orElseSucceed(() => undefined))
+          const server = ServerName.make(input.server)
+          const target = yield* connected(server)
+          if (!target.client) return yield* Effect.fail(new Error(unavailable(server, target.entry.status)))
+          return yield* target.entry.connection.recovering(target.client, (connection) =>
+            connection.prompt({ name: input.name, args: input.args }),
+          )
         }),
         resourceCatalog: Effect.fn("MCP.resourceCatalog")(function* () {
           const empty = ResourceCatalog.make({ resources: [], templates: [] })
