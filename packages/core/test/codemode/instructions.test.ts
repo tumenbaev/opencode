@@ -24,6 +24,31 @@ const lookup: CodeModeCatalog.Tool = {
 }
 
 describe("CodeModeInstructions", () => {
+  it.effect("restates the full catalog when continuing a legacy fork snapshot", () =>
+    Effect.gen(function* () {
+      const previous = {
+        values: {
+          "core/codemode": {
+            total: 1,
+            shown: 1,
+            namespaces: [{ name: "notes", count: 1, entries: [{ path: echo.name, line: `- ${echo.name}` }] }],
+          },
+        },
+      }
+      const updated = yield* readUpdate(CodeModeInstructions.make({ tools: [echo, lookup] }), previous)
+      expect(updated.changed).toBe(true)
+      expect(updated.text).toContain("The catalog is complete.")
+      expect(updated.text).toContain(`- ${echo.name}`)
+      expect(updated.text).toContain(`- ${lookup.name}`)
+      expect(updated.text).not.toContain(echo.signature)
+      expect(updated.text).not.toContain(lookup.signature)
+      expect(updated.values["core/codemode"]).toEqual(CodeModeCatalog.summarize({ tools: [echo, lookup] }))
+      const unchanged = yield* readUpdate(CodeModeInstructions.make({ tools: [echo, lookup] }), updated)
+      expect(unchanged.changed).toBe(false)
+      expect(unchanged.text).toBe("")
+    }),
+  )
+
   it.effect("instructs the model not to call execute while the catalog is empty", () =>
     Effect.gen(function* () {
       const initialized = yield* readInitial(CodeModeInstructions.make({ tools: [] }))
