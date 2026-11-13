@@ -9,6 +9,7 @@ import { Location } from "@opencode/core/location"
 import { Model } from "@opencode/core/model"
 import { Permission } from "@opencode/core/permission"
 import { Plugin } from "@opencode/core/plugin"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
@@ -109,9 +110,9 @@ const setup = (providerID = "test") =>
       model: Model.Ref.make({ providerID: Provider.ID.make(providerID), id: Model.ID.make("chat") }),
     })
     const registry = yield* Tool.Service
-    const run = (input: Record<string, unknown>) =>
+    const run = (input: Record<string, unknown>, sessionID = session.id) =>
       executeTool(registry, {
-        sessionID: session.id,
+        sessionID,
         ...toolIdentity,
         call: { type: "tool-call", id: `call-${JSON.stringify(input)}`, name: ImageGenerateTool.name, input },
       })
@@ -169,6 +170,64 @@ const text = (result: { readonly content?: ReadonlyArray<Tool.Content> }) =>
 const failure = (result: { readonly error?: { readonly message: string } }) => result.error?.message
 
 describe("experimental_image_generate", () => {
+  it.live("keeps guidance request-local across parent and child hooks and launches", () =>
+    Effect.gen(function* () {
+      yield* imageModel("test", "painter")
+      const { session, run } = yield* setup()
+      const sessions = yield* Session.Service
+      const child = yield* sessions.create({ parentID: session.id })
+      const hooks = yield* PluginHooks.Service
+      const registry = yield* Tool.Service
+      const definition = (yield* toolDefinitions(registry)).find((tool) => tool.name === ImageGenerateTool.name)
+      expect(definition?.description).toBe(ImageGenerateTool.description)
+      const shared = { description: ImageGenerateTool.description, input: { type: "object" as const } }
+      const event = (sessionID: typeof session.id) => ({
+        sessionID,
+        agent: toolIdentity.agent,
+        model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("chat") }),
+        system: [],
+        messages: [],
+        tools: { [ImageGenerateTool.name]: { ...shared } },
+        options: {},
+      })
+      for (const hook of ["context", "compaction", "generate"] as const) {
+        const childEvent = event(child.id)
+        const childTool = childEvent.tools[ImageGenerateTool.name]
+        yield* hooks.trigger("session", hook, childEvent)
+        expect(childEvent.tools[ImageGenerateTool.name]).toBe(childTool)
+        expect(childEvent.tools[ImageGenerateTool.name]?.description).toBe(
+          ImageGenerateTool.description.replace(" Never poll, sleep, or check for the file while you wait.", ""),
+        )
+        const parentEvent = event(session.id)
+        yield* hooks.trigger("session", hook, parentEvent)
+        expect(parentEvent.tools[ImageGenerateTool.name]?.description).toBe(ImageGenerateTool.description)
+        expect(shared.description).toBe(ImageGenerateTool.description)
+      }
+      expect((yield* toolDefinitions(registry)).find((tool) => tool.name === ImageGenerateTool.name)?.description).toBe(
+        ImageGenerateTool.description,
+      )
+
+      fixture.gate = Effect.never
+      const childResult = yield* run({ prompt: "child" }, child.id)
+      const parentResult = yield* run({ prompt: "parent" })
+      expect(text(childResult)).toContain(`Image job ${childResult.output.id} started in the background`)
+      expect(text(childResult)).toContain(childResult.output.path)
+      expect(text(childResult)).toContain("You will be notified automatically when it finishes or fails.")
+      expect(text(childResult)).toContain("Do not request the same image again while it runs.")
+      expect(text(childResult)).not.toMatch(/sleep|poll|check whether|Work on other tasks|end your response/)
+      expect(text(parentResult)).toContain("You will be notified automatically when it finishes or fails.")
+      expect(text(parentResult)).toContain(
+        "DO NOT sleep, poll, check whether the file exists, or request the same image again while it runs.",
+      )
+      expect(text(parentResult)).not.toMatch(/Work on other tasks|end your response/)
+      const jobs = yield* Job.Service
+      expect((yield* jobs.get(childResult.output.id))?.status).toBe("running")
+      expect((yield* jobs.get(parentResult.output.id))?.status).toBe("running")
+      yield* jobs.cancel(childResult.output.id)
+      yield* jobs.cancel(parentResult.output.id)
+    }),
+  )
+
   it.live("is registered only while an image model is available", () =>
     Effect.gen(function* () {
       yield* setup()
@@ -249,7 +308,6 @@ describe("experimental_image_generate", () => {
             `Image job ${id} started in the background with test/painter. It will be saved as ${stem} with the extension of its real format (.png, .jpg, .webp or .gif); the notice gives the exact path.`,
             "You will be notified automatically when it finishes or fails.",
             "DO NOT sleep, poll, check whether the file exists, or request the same image again while it runs.",
-            "Work on other tasks, or briefly tell the user what you started and end your response.",
           ].join("\n"),
         },
       ])

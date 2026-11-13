@@ -6,7 +6,7 @@ import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import type { Shell as ShellSchema } from "@opencode/schema/shell"
 import type { Tool } from "@opencode/schema/tool"
-import { Clock, Deferred, Effect, Fiber, Option, Schema, Struct } from "effect"
+import { Clock, Deferred, Effect, Fiber, Option, Predicate, Schema, Struct } from "effect"
 import { Config } from "../../config.js"
 import { ConfigEntryObserver } from "../../config/plugin/entry-observer.js"
 import { Environment } from "../../environment/index.js"
@@ -30,8 +30,9 @@ const CODE_MODE_TIMEOUT_MS = 10 * 60 * 1_000
 // How long a call the user interrupted waits for its stopped command to exit before settling with the output so far.
 const INTERRUPT_WAIT = "500 millis"
 
-const BACKGROUND_INSTRUCTION =
-  "You will be notified automatically when the command finishes. The notification will include the command's output. Unless the user explicitly asks otherwise, DO NOT poll for completion, even if you need the final result to continue. Repeatedly sleeping and reading or searching the output file is polling, not useful work. You may read the current output if it lets you do useful work now, but do not repeatedly check it while waiting for the command to finish. Keep working on anything that does not depend on the result. If you have nothing else to do, end your response; you will be resumed automatically when the command finishes."
+const BACKGROUND_INSTRUCTION = "You will be notified automatically when the command finishes, with its output."
+const BACKGROUND_PARAMETER =
+  "Run the command in the background and return immediately. You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes."
 const OS =
   process.platform === "darwin"
     ? "macOS"
@@ -67,8 +68,7 @@ export const Input = Schema.Struct({
   }),
   timeout: timeoutInput(DEFAULT_TIMEOUT_MS),
   background: Schema.optionalKey(Schema.Boolean).annotate({
-    description:
-      "Run the command in the background and return immediately. You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.",
+    description: `${BACKGROUND_PARAMETER} DO NOT poll for completion.`,
   }),
 })
 
@@ -108,18 +108,21 @@ type Output = ReturnType<typeof ShellResult.output> & {
   pid?: number
 }
 
-const resultMessages = (output: Output, timeout?: number) => {
-  const notice = output.status === "running" ? BACKGROUND_INSTRUCTION : ShellResult.notice(output, timeout)
+const backgroundInstruction = (child: boolean) =>
+  `${BACKGROUND_INSTRUCTION} ${child ? "Do not start another copy while it is running." : "Do not sleep, poll for completion, or start another copy while it is running."}`
+
+const resultMessages = (output: Output, timeout?: number, child = false) => {
+  const notice = output.status === "running" ? backgroundInstruction(child) : ShellResult.notice(output, timeout)
   return [...(output.output ? [output.output] : []), ...(notice ? [notice] : [])]
 }
 
-const toolResult = (output: Output, timeout?: number) => {
+const toolResult = (output: Output, timeout?: number, child = false) => {
   return {
     output: {
       ...Struct.omit(output, ["exit", "status", "truncated", "timeout", "killed"]),
       exitCode: output.exit ?? null,
     },
-    content: resultMessages(output, timeout).map((text) => ({
+    content: resultMessages(output, timeout, child).map((text) => ({
       type: "text" as const,
       text,
     })),
@@ -246,7 +249,7 @@ const startJob = Effect.fnUntraced(function* (
 })
 
 /** The tool result of a call whose command moved to the background. */
-export const backgroundToolResult = (info: ShellSchema.Info) => {
+export const backgroundToolResult = (info: ShellSchema.Info, child = false) => {
   // Narrowed to what a backgrounded command reports, so it can be published as is.
   const metadata = {
     shellID: info.id,
@@ -255,7 +258,7 @@ export const backgroundToolResult = (info: ShellSchema.Info) => {
     ...(info.pid === undefined ? {} : { pid: info.pid }),
   }
   return {
-    content: [backgroundText(info), BACKGROUND_INSTRUCTION].map((text) => ({
+    content: [backgroundText(info), backgroundInstruction(child)].map((text) => ({
       type: "text" as const,
       text,
     })),
@@ -510,7 +513,16 @@ export const Plugin = {
                 "gen_ai.tool.call.id": context.id,
                 ...(background ? { "opencode.shell.background": true } : {}),
               }),
-              Effect.map((output) => toolResult(output, finalTimeout)),
+              Effect.flatMap((output) =>
+                output.status === "running"
+                  ? sessions.get(context.sessionID).pipe(
+                      Effect.option,
+                      Effect.map((session) =>
+                        toolResult(output, finalTimeout, !!Option.getOrUndefined(session)?.parentID),
+                      ),
+                    )
+                  : Effect.succeed(toolResult(output, finalTimeout)),
+              ),
               Effect.mapError(toolFailure(`Unable to execute command: ${input.command}`)),
             )
           },
@@ -524,6 +536,22 @@ export const Plugin = {
         if (!tool) return
         const selected = ShellSelect.name(yield* compatibleShell)
         tool.description = selected ? `Uses ${selected}` : ""
+        const session = yield* sessions.get(event.sessionID).pipe(Effect.option)
+        if (!Option.getOrUndefined(session)?.parentID) return
+        const properties = tool.input.properties
+        if (!Predicate.isObject(properties) || !Predicate.isObject(properties.background)) return
+        const background = properties.background
+        if (typeof background.description !== "string") return
+        tool.input = {
+          ...tool.input,
+          properties: {
+            ...properties,
+            background: {
+              ...background,
+              description: background.description.replace(/ DO NOT poll for completion\.$/, ""),
+            },
+          },
+        }
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)

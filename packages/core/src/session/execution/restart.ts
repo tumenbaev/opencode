@@ -266,7 +266,7 @@ export const layer = (options?: Options) =>
               callID: call.part.id,
             })
             if (!info) return
-            const result = ShellTool.backgroundToolResult(info)
+            const result = ShellTool.backgroundToolResult(info, !!(yield* store.get(sessionID))?.parentID)
             if (!isReadonlyArrayNonEmpty(result.content)) return
             yield* bus.publish(SessionEvent.Tool.Success, {
               sessionID,

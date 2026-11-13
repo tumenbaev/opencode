@@ -138,7 +138,14 @@ const executionNode = makeGlobalNode({
 
 const shellPluginSupervisor = makeLocationNode({
   name: "test/shell-plugins",
-  layer: Layer.effectDiscard(registerToolPlugin(ShellTool.Plugin)),
+  layer: Layer.effectDiscard(
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      yield* registerToolPlugin(ShellTool.Plugin, {
+        session: { hook: (name, callback, options) => hooks.register("session", name, callback, options) },
+      })
+    }),
+  ),
   deps: [
     Config.node,
     Environment.node,
@@ -151,6 +158,7 @@ const shellPluginSupervisor = makeLocationNode({
     Shell.daemonNode,
     ShellSelect.node,
     Tool.node,
+    PluginHooks.node,
   ],
 })
 
@@ -1001,6 +1009,67 @@ describe("ShellTool", () => {
       }),
     { timeout: 15_000 },
   )
+
+  it.live("uses request-local child shell guidance without changing shared definitions", () => {
+    reset()
+    return withTempDir((tmp) =>
+      withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const child = yield* sessions.create({
+            title: "child",
+            model: sessionModel,
+            parentID: sessionID,
+          })
+          const definition = (yield* toolDefinitions(registry)).find((tool) => tool.name === "shell")
+          if (!definition) throw new Error("Missing shell definition")
+          const original = JSON.stringify(definition.inputSchema)
+          const hooks = yield* PluginHooks.Service
+          const shared = { description: definition.description, input: definition.inputSchema }
+          for (const kind of ["context", "compaction", "generate"] as const) {
+            for (const owner of [child.id, sessionID]) {
+              const tool = { ...shared }
+              const event = yield* hooks.trigger("session", kind, {
+                sessionID: owner,
+                model: sessionModel,
+                agent: toolIdentity.agent,
+                system: [],
+                messages: [],
+                options: {},
+                tools: { shell: tool },
+              })
+              expect(event.tools.shell).toBe(tool)
+              expect(tool.description).toMatch(/^Uses .+/)
+              expect(JSON.stringify(tool.input).includes("DO NOT poll for completion.")).toBe(owner === sessionID)
+              expect(shared.description).toBe(definition.description)
+              expect(JSON.stringify(shared.input)).toBe(original)
+            }
+          }
+          expect(JSON.stringify(definition.inputSchema)).toBe(original)
+          expect(
+            JSON.stringify((yield* toolDefinitions(registry)).find((tool) => tool.name === "shell")?.inputSchema),
+          ).toBe(original)
+
+          const shell = yield* Shell.Service
+          for (const owner of [sessionID, child.id]) {
+            const result = yield* executeTool(registry, {
+              ...call({ command: idleCommand, background: true }, `background-${owner}`),
+              sessionID: owner,
+            })
+            const id = ID.make(String(result.metadata?.shellID))
+            const info = yield* shell.get(id)
+            const guidance =
+              owner === sessionID
+                ? "You will be notified automatically when the command finishes, with its output. Do not sleep, poll for completion, or start another copy while it is running."
+                : "You will be notified automatically when the command finishes, with its output. Do not start another copy while it is running."
+            expect(result.content?.[1]).toEqual({ type: "text", text: guidance })
+            expect(result.content).toEqual(ShellTool.backgroundToolResult(info, owner === child.id).content)
+            yield* shell.stop(id, "killed")
+          }
+        }),
+      ),
+    )
+  })
 
   productionIt.live(
     "uses the session environment instead of the server environment",
@@ -1948,7 +2017,7 @@ describe("ShellTool", () => {
             },
             {
               type: "text",
-              text: "You will be notified automatically when the command finishes. The notification will include the command's output. Unless the user explicitly asks otherwise, DO NOT poll for completion, even if you need the final result to continue. Repeatedly sleeping and reading or searching the output file is polling, not useful work. You may read the current output if it lets you do useful work now, but do not repeatedly check it while waiting for the command to finish. Keep working on anything that does not depend on the result. If you have nothing else to do, end your response; you will be resumed automatically when the command finishes.",
+              text: "You will be notified automatically when the command finishes, with its output. Do not sleep, poll for completion, or start another copy while it is running.",
             },
           ])
           expect((yield* shell.list()).map((info) => info.id)).toContain(id)
@@ -2222,7 +2291,7 @@ describe("ShellTool", () => {
           })
           expect(settled.content?.[1]).toEqual({
             type: "text",
-            text: "You will be notified automatically when the command finishes. The notification will include the command's output. Unless the user explicitly asks otherwise, DO NOT poll for completion, even if you need the final result to continue. Repeatedly sleeping and reading or searching the output file is polling, not useful work. You may read the current output if it lets you do useful work now, but do not repeatedly check it while waiting for the command to finish. Keep working on anything that does not depend on the result. If you have nothing else to do, end your response; you will be resumed automatically when the command finishes.",
+            text: "You will be notified automatically when the command finishes, with its output. Do not sleep, poll for completion, or start another copy while it is running.",
           })
           yield* Effect.sleep(Duration.millis(100))
           expect((yield* shell.get(id)).status).toBe("running")

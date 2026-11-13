@@ -1,6 +1,6 @@
 export * as SubagentTool from "./subagent.js"
 
-import { ToolFailure } from "@opencode/ai/effect"
+import { SystemPart, ToolFailure } from "@opencode/ai/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect, Predicate, Schema } from "effect"
@@ -17,13 +17,13 @@ import { SubagentJob } from "../../session/subagent-job.js"
 
 export const name = "subagent"
 
-const backgroundResult = (sessionID: SessionSchema.ID) => ({
+const backgroundResult = (sessionID: SessionSchema.ID, child: boolean) => ({
   sessionID,
   status: "running" as const,
   output: [
-    `The subagent is working in the background (sessionID: ${sessionID}). You will receive a <subagent> message when it goes idle, and again after each later round of work.`,
-    "DO NOT sleep, poll, proactively check on its progress, or duplicate this subagent's work.",
-    "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+    `The subagent is working in the background (sessionID: ${sessionID}). Reports arrive automatically in <subagent> messages, including after follow-up work. Reports list any background work still running.`,
+    ...(child ? [] : ["Do not sleep, poll, or proactively check on the subagent's progress."]),
+    "Do not duplicate this subagent's work; avoid working with the same files or topics it is using.",
     "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
   ].join("\n"),
 })
@@ -44,12 +44,8 @@ export const Output = Schema.Struct({
   status: Schema.Literal("running"),
   output: Schema.String,
 })
-export const description = [
-  "Delegate discrete pieces of work. Give new subagents a highly detailed task description with comprehensive context and out-of-scope items; they start with no context beyond your prompt.",
-  "Subagents always run in the background: the call returns immediately with a sessionID, and you receive a `<subagent>` message each time the child goes idle, including after later work.",
-  "Keep working on non-overlapping tasks, or briefly tell the user what you launched and end your response. Do not sleep, poll, or proactively check on the child's progress.",
-  "Pass the returned sessionID to continue that specific child conversation. A follow-up to a running child joins its current run.",
-].join("\n")
+export const description =
+  "Use it to delegate discrete pieces of work. Always provide highly detailed task description with comprehensive context and out of scope items. Subagent starts with NO context: it knows only what you put in the prompt."
 
 export const Plugin = {
   id: "opencode.tool.subagent",
@@ -211,7 +207,7 @@ export const Plugin = {
                 description: input.description,
               }
               yield* subagents.start(recovery)
-              return backgroundResult(child.id)
+              return backgroundResult(child.id, parent.parentID !== undefined)
             }).pipe(
               Effect.map((output) => ({
                 output,
@@ -236,6 +232,12 @@ export const Plugin = {
 
     const hook = (event: SessionHooks["context"]) =>
       Effect.gen(function* () {
+        if ((yield* sessions.get(event.sessionID).pipe(Effect.orDie)).parentID)
+          event.system.push(
+            SystemPart.make(
+              "Complete the assigned task before returning your final result. Run finite checks in the foreground, or wait for their results.",
+            ),
+          )
         const tool = event.tools[name]
         if (!tool) return
         const selected = yield* agents.resolve(event.agent)

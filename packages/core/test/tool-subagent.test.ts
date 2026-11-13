@@ -3,6 +3,7 @@ import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Scope, S
 import { AIError, InvalidRequestError, LanguageModel, LLMEvent } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { TestLLM } from "@opencode/ai/testing"
+import type { SessionHooks } from "@opencode/plugin/effect/session"
 import path from "path"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -125,7 +126,11 @@ const subagentPluginSupervisor = makeLocationNode({
   layer: Layer.effectDiscard(
     Effect.gen(function* () {
       const hooks = yield* PluginHooks.Service
-      yield* registerToolPlugin(SubagentTool.Plugin, {}, (name, callback) => hooks.register("tool", name, callback))
+      yield* registerToolPlugin(
+        SubagentTool.Plugin,
+        { session: { hook: (name, callback, options) => hooks.register("session", name, callback, options) } },
+        (name, callback) => hooks.register("tool", name, callback),
+      )
     }),
   ),
   deps: [
@@ -227,6 +232,60 @@ const withSubagent = (location: Location.Ref) =>
   })
 
 describe("SubagentTool", () => {
+  it.live("keeps child completion guidance request-local even without the subagent tool", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(dir.path) }),
+            model: parentModel,
+          })
+          const child = yield* sessions.create({ parentID: parent.id })
+          const grandchild = yield* sessions.create({ parentID: child.id })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const hooks = yield* PluginHooks.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const shared = { description: SubagentTool.description, input: { type: "object" as const } }
+          expect(SubagentTool.description).toBe(
+            "Use it to delegate discrete pieces of work. Always provide highly detailed task description with comprehensive context and out of scope items. Subagent starts with NO context: it knows only what you put in the prompt.",
+          )
+          const event = (sessionID: Session.ID, tools: SessionHooks["context"]["tools"]): SessionHooks["context"] => ({
+            sessionID,
+            agent: toolIdentity.agent,
+            model: parentModel,
+            system: [],
+            messages: [],
+            tools,
+            options: {},
+          })
+          const instruction =
+            "Complete the assigned task before returning your final result. Run finite checks in the foreground, or wait for their results."
+          for (const hook of ["context", "compaction", "generate"] as const) {
+            const childEvent = event(child.id, { [SubagentTool.name]: { ...shared } })
+            const childTool = childEvent.tools[SubagentTool.name]
+            yield* hooks.trigger("session", hook, childEvent)
+            expect(childEvent.tools[SubagentTool.name]).toBe(childTool)
+            expect(childEvent.system.map((part) => part.text)).toEqual([instruction])
+            expect(childEvent.tools[SubagentTool.name]?.description).toContain("Available subagents:")
+            expect(childEvent.tools[SubagentTool.name]?.description).not.toMatch(/end your response|Keep working|poll/)
+            const withoutTool = event(grandchild.id, {})
+            yield* hooks.trigger("session", hook, withoutTool)
+            expect(withoutTool.system.map((part) => part.text)).toEqual([instruction])
+            const parentEvent = event(parent.id, { [SubagentTool.name]: { ...shared } })
+            yield* hooks.trigger("session", hook, parentEvent)
+            expect(parentEvent.system).toEqual([])
+            expect(shared.description).toBe(SubagentTool.description)
+          }
+          expect(
+            (yield* registry.snapshot()).definitions.find((tool) => tool.name === SubagentTool.name)?.description,
+          ).toBe(SubagentTool.description)
+        }),
+      ),
+    ),
+  )
+
   it.live("guards exhausted reuse without blocking fresh children or already admitted work", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>
@@ -295,9 +354,10 @@ describe("SubagentTool", () => {
             store,
             jobs,
             inbox: {
-              admit: (request) => Effect.sync(() => {
-                if (request.item.type === "synthetic") delivered.push(request.item.payload.text)
-              }),
+              admit: (request) =>
+                Effect.sync(() => {
+                  if (request.item.type === "synthetic") delivered.push(request.item.payload.text)
+                }),
             },
             draining: Effect.succeed(new Set()),
             wake: () => Effect.void,
@@ -512,6 +572,10 @@ describe("SubagentTool", () => {
             sessionID: outputSessionID(settled.metadata),
             status: "running",
           })
+          const text = settled.output.output
+          expect(text).toContain("Do not duplicate this subagent's work")
+          expect(text).toContain("Reports arrive automatically in <subagent> messages")
+          expect(text).not.toMatch(/sleep|poll|ask the subagent for status|end your response|Work on non-overlapping/)
           expect((yield* sessions.get(outputSessionID(settled.metadata))).parentID).toBe(parent.id)
         }),
       ),
@@ -551,6 +615,9 @@ describe("SubagentTool", () => {
           const child = yield* sessions.get(outputSessionID(settled.metadata))
           expect(settled.output).toMatchObject({ sessionID: child.id, status: "running" })
           expect(settled.output.output).toContain(`sessionID: ${child.id}`)
+          expect(settled.output.output).toContain("Do not sleep, poll, or proactively check on the subagent's progress.")
+          expect(settled.output.output).toContain("Do not duplicate this subagent's work")
+          expect(settled.output.output).not.toMatch(/end your response|Work on non-overlapping/)
           expect(settled.metadata).toEqual({ sessionID: child.id, status: "running" })
           expect(progress[0]).toEqual({ sessionID: child.id, status: "running" })
           expect(child).toMatchObject({

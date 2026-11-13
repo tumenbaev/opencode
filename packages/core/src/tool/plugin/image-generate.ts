@@ -3,6 +3,7 @@ export * as ImageGenerateTool from "./image-generate.js"
 import path from "path"
 import { ToolFailure } from "@opencode/ai/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { Document, Entry } from "@opencode/schema/config"
 import { Identifier } from "@opencode/schema/identifier"
 import { Global } from "@opencode/util/global"
@@ -86,6 +87,16 @@ export const Plugin = {
     const sessions = yield* Session.Service
     const models = yield* Model.Service
     const permission = yield* Permission.Service
+
+    const guidance = (event: SessionHooks["context"]) =>
+      Effect.gen(function* () {
+        const tool = event.tools[name]
+        if (!tool || !(yield* sessions.get(event.sessionID)).parentID) return
+        tool.description = tool.description.replace(" Never poll, sleep, or check for the file while you wait.", "")
+      }).pipe(Effect.catch(() => Effect.void))
+    yield* ctx.session.hook("context", guidance)
+    yield* ctx.session.hook("compaction", guidance)
+    yield* ctx.session.hook("generate", guidance)
 
     const resolveModel = Effect.fn("ImageGenerateTool.resolveModel")(function* (
       input: string | undefined,
@@ -339,6 +350,7 @@ export const Plugin = {
               )
               const id = `image_${Identifier.create(false)}`
               const notificationID = SessionMessage.ID.create()
+              const child = (yield* sessions.get(context.sessionID)).parentID !== undefined
               yield* jobs.start({
                 id,
                 notificationID,
@@ -355,8 +367,9 @@ export const Plugin = {
                 content: [
                   `Image job ${id} started in the background with ${ref}. It will be saved as ${stem} with the extension of its real format (.png, .jpg, .webp or .gif); the notice gives the exact path.${resolved.note ?? ""}`,
                   "You will be notified automatically when it finishes or fails.",
-                  "DO NOT sleep, poll, check whether the file exists, or request the same image again while it runs.",
-                  "Work on other tasks, or briefly tell the user what you started and end your response.",
+                  child
+                    ? "Do not request the same image again while it runs."
+                    : "DO NOT sleep, poll, check whether the file exists, or request the same image again while it runs.",
                 ].join("\n"),
                 metadata: { path: stem, model: ref, jobID: id },
               }
