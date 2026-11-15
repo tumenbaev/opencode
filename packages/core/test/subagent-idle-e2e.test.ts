@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import path from "path"
-import { LanguageModel } from "@opencode/ai/effect"
+import { LanguageModel, LLMEvent } from "@opencode/ai/effect"
 import type { LLMClientService } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { TestLLM } from "@opencode/ai/testing"
@@ -180,6 +180,7 @@ const boot = (
     )
     return {
       context,
+      bus: Context.get(context, Bus.Service),
       sessions: Context.get(context, Session.Service),
       execution: Context.get(context, SessionExecution.Service),
       jobs: Context.get(context, Job.Service),
@@ -401,6 +402,77 @@ describe("Code Mode session jobs", () => {
 })
 
 describe("subagent idle reports end to end", () => {
+  e2e.live("waits for both sibling subagents before advancing the parent", () =>
+    Effect.gen(function* () {
+      const h = yield* harness()
+      const reviewerStarted = yield* Deferred.make<void>()
+      const fallbackStarted = yield* Deferred.make<void>()
+      const reviewerRelease = yield* Deferred.make<void>()
+      const fallbackRelease = yield* Deferred.make<void>()
+      const response = (started: Deferred.Deferred<void>, release: Deferred.Deferred<void>, text: string) =>
+        Stream.unwrap(
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as(Stream.fromIterable(TestLLM.text(text, text))),
+          ),
+        )
+      let parentRequests = 0
+      yield* h.llm.serve((request) => {
+        if (request.model.id === "reviewer") return response(reviewerStarted, reviewerRelease, "reviewer report")
+        if (request.model.id === "fallback") return response(fallbackStarted, fallbackRelease, "fallback report")
+        if (request.model.id === "build" && parentRequests++ === 0)
+          return TestLLM.toolCalls(
+            LLMEvent.toolCall({
+              id: "reviewer-call",
+              name: SubagentTool.name,
+              input: { agent: "reviewer", description: "review", prompt: "review" },
+            }),
+            LLMEvent.toolCall({
+              id: "fallback-call",
+              name: SubagentTool.name,
+              input: { agent: "fallback", description: "fallback", prompt: "review" },
+            }),
+          )
+        return TestLLM.text("parent done", "parent-done")
+      })
+      const firstCompleted = yield* h.bus.subscribe(SessionEvent.Tool.Success).pipe(
+        Stream.filter((event) => event.data.sessionID === h.parent.id && event.data.id === "reviewer-call"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      const secondCompleted = yield* h.bus.subscribe(SessionEvent.Tool.Success).pipe(
+        Stream.filter((event) => event.data.sessionID === h.parent.id && event.data.id === "fallback-call"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* h.sessions.prompt({ sessionID: h.parent.id, text: "Review in parallel" })
+      yield* Deferred.await(reviewerStarted)
+      yield* Deferred.await(fallbackStarted)
+      expect(parentRequests).toBe(1)
+      yield* Deferred.succeed(reviewerRelease, undefined)
+      const firstEvent = yield* Fiber.join(firstCompleted)
+      expect(Array.from(firstEvent)[0]?.data.metadata).toMatchObject({ status: "completed" })
+      expect(parentRequests).toBe(1)
+      yield* Deferred.succeed(fallbackRelease, undefined)
+      const secondEvent = yield* Fiber.join(secondCompleted)
+      expect(Array.from(secondEvent)[0]?.data.metadata).toMatchObject({ status: "completed" })
+      yield* h.sessions.wait(h.parent.id)
+      const requests = (yield* h.llm.requests()).filter((request) => request.model.id === "build")
+      expect(requests).toHaveLength(2)
+      const messages = requests[1]?.messages ?? []
+      const encoded = JSON.stringify(messages)
+      expect(encoded).toContain("reviewer report")
+      expect(encoded).toContain("fallback report")
+      const results = messages.flatMap((message) =>
+        message.role === "tool" ? message.content.filter((part) => part.type === "tool-result") : [],
+      )
+      expect(results.map((part) => part.id).sort()).toEqual(["fallback-call", "reviewer-call"])
+      for (const result of results) expect(JSON.stringify(result.result)).toContain("finished its current turn")
+    }),
+  )
+
   e2e.live(
     "reports immediately with running background work and again after the shell exits",
     () =>
@@ -423,7 +495,11 @@ describe("subagent idle reports end to end", () => {
         )
 
         const launched = yield* h.call("call-launch")
-        expect(launched).toMatchObject({ status: "completed", metadata: { status: "running" } })
+        expect(launched).toMatchObject({
+          status: "completed",
+          output: { status: "completed" },
+          metadata: { status: "completed" },
+        })
 
         yield* waitForReports(h, h.parent.id, 1)
         const first = yield* deliveredReports(h, h.parent.id)
@@ -520,12 +596,12 @@ describe("subagent idle reports end to end", () => {
         yield* h.jobs.wait({ id: childID })
 
         const second = yield* h.call("call-follow-up", { sessionID: childID })
-        expect(second).toMatchObject({ metadata: { sessionID: childID, status: "running" } })
+        expect(second).toMatchObject({ metadata: { sessionID: childID, status: "completed" } })
         yield* waitForReports(h, h.parent.id, 2)
         expect((yield* deliveredReports(h, h.parent.id))[1]!.text).toContain("second answer")
 
         const third = yield* h.call("call-follow-up-again", { sessionID: childID })
-        expect(third).toMatchObject({ metadata: { sessionID: childID, status: "running" } })
+        expect(third).toMatchObject({ metadata: { sessionID: childID, status: "completed" } })
         yield* waitForReports(h, h.parent.id, 3)
         expect((yield* deliveredReports(h, h.parent.id))[2]!.text).toContain("third answer")
         expect(yield* h.jobs.pendingBackground).toEqual([])
@@ -556,9 +632,8 @@ describe("subagent idle reports end to end", () => {
                 description: "grandchild review",
                 prompt: "review the grandchild fixture",
               }),
-              TestLLM.text("child launched grandchild", "child-turn-1"),
-              TestLLM.text("child saw first grandchild report", "child-turn-2"),
-              TestLLM.text("child saw grandchild finish", "child-turn-3"),
+              TestLLM.text("child saw first grandchild report", "child-turn-1"),
+              TestLLM.text("child saw grandchild finish", "child-turn-2"),
             ],
             fallback: [
               TestLLM.toolCall("call-grandchild-shell", ShellTool.name, { command, background: true }),
@@ -579,9 +654,7 @@ describe("subagent idle reports end to end", () => {
 
         yield* waitForReports(h, h.parent.id, 1)
         const firstRoot = (yield* deliveredReports(h, h.parent.id))[0]!
-        expect(firstRoot.text).toContain("child launched grandchild")
-        expect(firstRoot.text).toContain("Background work still running:")
-        expect(firstRoot.text).toMatch(/- (subagent \(fallback, sessionID: ses_|shell \()/)
+        expect(firstRoot.text).toContain("child saw first grandchild report")
 
         yield* waitForReports(h, childID, 1)
         const firstChild = (yield* deliveredReports(h, childID))[0]!
@@ -591,15 +664,12 @@ describe("subagent idle reports end to end", () => {
 
         // The child reports the grandchild's still-running shell to the root, attributed to
         // the grandchild's session rather than skipping a level.
-        yield* waitForReports(h, h.parent.id, 2)
-        const secondRoot = (yield* deliveredReports(h, h.parent.id))[1]!
-        expect(secondRoot.text).toContain("child saw first grandchild report")
-        expect(secondRoot.text).toContain("Background work still running:\n- shell (")
-        expect(secondRoot.text).toContain(`in ${grandchildID})`)
+        expect(firstRoot.text).toContain("Background work still running:\n- shell (")
+        expect(firstRoot.text).toContain(`in ${grandchildID})`)
 
         yield* Effect.promise(() => Bun.write(release, "go"))
         yield* waitForReports(h, childID, 2)
-        yield* waitForReports(h, h.parent.id, 3)
+        yield* waitForReports(h, h.parent.id, 2)
         const childReports = yield* deliveredReports(h, childID)
         const rootReports = yield* deliveredReports(h, h.parent.id)
         expect(childReports[1]!.text).toContain("grandchild finished")
@@ -628,9 +698,10 @@ describe("subagent idle reports end to end", () => {
           }),
         )
 
-        const launched = yield* h.call("call-launch")
-        const childID = outputSessionID(launched.metadata)
+        const running = yield* h.call("call-launch").pipe(Effect.forkChild)
         yield* Deferred.await(crashed)
+        const launched = yield* Fiber.join(running)
+        const childID = outputSessionID(launched.metadata)
         yield* h.sessions.wait(childID)
         yield* h.jobs.wait({ id: childID })
 
@@ -690,7 +761,7 @@ describe("subagent idle reports end to end", () => {
           }),
         )
         const gate = yield* base.llm.gate()
-        const launched = yield* executeTool(registry, {
+        yield* executeTool(registry, {
           sessionID: parent.id,
           ...toolIdentity,
           call: {
@@ -699,9 +770,9 @@ describe("subagent idle reports end to end", () => {
             name: SubagentTool.name,
             input: { agent: "reviewer", description: "restart review", prompt: "review this" },
           },
-        })
-        const childID = outputSessionID(launched.metadata)
+        }).pipe(Effect.forkChild)
         yield* gate.started
+        const childID = Schema.decodeUnknownSync(Session.ID)((yield* first.jobs.pendingBackground)[0]!.id)
         expect(yield* first.jobs.pendingBackground).toMatchObject([{ id: childID, status: "running" }])
         expect((yield* claims(first))[childID]).toBe(true)
 
@@ -754,9 +825,9 @@ describe("subagent idle reports end to end", () => {
           }),
         )
         const gate = yield* h.llm.gate()
-        const launched = yield* h.call("call-launch")
-        const childID = outputSessionID(launched.metadata)
+        yield* h.call("call-launch").pipe(Effect.forkChild)
         yield* gate.started
+        const childID = Schema.decodeUnknownSync(Session.ID)((yield* h.jobs.pendingBackground)[0]!.id)
         expect((yield* claims(h))[childID]).toBe(true)
 
         expect(Exit.isSuccess(yield* h.sessions.remove(h.parent.id).pipe(Effect.exit))).toBe(true)
@@ -789,9 +860,9 @@ describe("subagent idle reports end to end", () => {
           }),
         )
         const gate = yield* h.llm.gate()
-        const launched = yield* h.call("call-launch")
-        const childID = outputSessionID(launched.metadata)
+        yield* h.call("call-launch").pipe(Effect.forkChild)
         yield* gate.started
+        const childID = Schema.decodeUnknownSync(Session.ID)((yield* h.jobs.pendingBackground)[0]!.id)
 
         expect(Exit.isSuccess(yield* h.sessions.remove(childID).pipe(Effect.exit))).toBe(true)
         yield* gate.release

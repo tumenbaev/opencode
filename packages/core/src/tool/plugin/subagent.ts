@@ -17,14 +17,12 @@ import { SubagentJob } from "../../session/subagent-job.js"
 
 export const name = "subagent"
 
-const backgroundResult = (sessionID: SessionSchema.ID, child: boolean) => ({
+const completedResult = (sessionID: SessionSchema.ID) => ({
   sessionID,
-  status: "running" as const,
+  status: "completed" as const,
   output: [
-    `The subagent is working in the background (sessionID: ${sessionID}). Reports arrive automatically in <subagent> messages, including after follow-up work. Reports list any background work still running.`,
-    ...(child ? [] : ["Do not sleep, poll, or proactively check on the subagent's progress."]),
-    "Do not duplicate this subagent's work; avoid working with the same files or topics it is using.",
-    "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
+    `The subagent finished its current turn (sessionID: ${sessionID}). Results arrive in <subagent> messages. Reports list any background work still running, and later reports arrive when that work finishes.`,
+    "To send a follow-up, call subagent again with this sessionID.",
   ].join("\n"),
 })
 
@@ -41,11 +39,11 @@ export const Input = Schema.Struct({
 
 export const Output = Schema.Struct({
   sessionID: SessionSchema.ID,
-  status: Schema.Literal("running"),
+  status: Schema.Literal("completed"),
   output: Schema.String,
 })
 export const description =
-  "Use it to delegate discrete pieces of work. Always provide highly detailed task description with comprehensive context and out of scope items. Subagent starts with NO context: it knows only what you put in the prompt."
+  "Use it to delegate discrete pieces of work. Always provide highly detailed task description with comprehensive context and out of scope items. Subagent starts with NO context: it knows only what you put in the prompt. Each call waits for the child's current turn to finish; launch independent calls in parallel."
 
 export const Plugin = {
   id: "opencode.tool.subagent",
@@ -207,7 +205,18 @@ export const Plugin = {
                 description: input.description,
               }
               yield* subagents.start(recovery)
-              return backgroundResult(child.id, parent.parentID !== undefined)
+              // Tool calls run concurrently; joining each child here holds the next parent model step
+              // until the whole batch settles. Keep durable result delivery in the existing report path.
+              const waiting = jobs.wait({ id: child.id })
+              if (context.cancel) {
+                const stopped = yield* Effect.raceFirst(
+                  waiting.pipe(Effect.as(false)),
+                  context.cancel.pipe(Effect.as(true)),
+                )
+                // Cancel outside the race: cancel resolves the job's waiters before stopping its work.
+                if (stopped) yield* jobs.cancel(child.id)
+              } else yield* waiting
+              return completedResult(child.id)
             }).pipe(
               Effect.map((output) => ({
                 output,

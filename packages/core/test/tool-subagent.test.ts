@@ -249,7 +249,7 @@ describe("SubagentTool", () => {
           const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
           const shared = { description: SubagentTool.description, input: { type: "object" as const } }
           expect(SubagentTool.description).toBe(
-            "Use it to delegate discrete pieces of work. Always provide highly detailed task description with comprehensive context and out of scope items. Subagent starts with NO context: it knows only what you put in the prompt.",
+            "Use it to delegate discrete pieces of work. Always provide highly detailed task description with comprehensive context and out of scope items. Subagent starts with NO context: it knows only what you put in the prompt. Each call waits for the child's current turn to finish; launch independent calls in parallel.",
           )
           const event = (sessionID: Session.ID, tools: SessionHooks["context"]["tools"]): SessionHooks["context"] => ({
             sessionID,
@@ -346,7 +346,7 @@ describe("SubagentTool", () => {
           const fresh = yield* call()
           const freshID = outputSessionID(fresh.metadata)
           expect(freshID).not.toBe(child.id)
-          expect(fresh).toMatchObject({ status: "completed", output: { status: "running" } })
+          expect(fresh).toMatchObject({ status: "completed", output: { status: "completed" } })
 
           const store = yield* SessionStore.Service
           const delivered: string[] = []
@@ -564,17 +564,16 @@ describe("SubagentTool", () => {
 
           expect(settled).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { status: "running" },
-            content: [{ type: "text", text: expect.stringContaining("working in the background") }],
+            output: { status: "completed" },
+            metadata: { status: "completed" },
+            content: [{ type: "text", text: expect.stringContaining("finished its current turn") }],
           })
           expect(settled.metadata).toEqual({
             sessionID: outputSessionID(settled.metadata),
-            status: "running",
+            status: "completed",
           })
           const text = settled.output.output
-          expect(text).toContain("Do not duplicate this subagent's work")
-          expect(text).toContain("Reports arrive automatically in <subagent> messages")
+          expect(text).toContain("Results arrive in <subagent> messages")
           expect(text).not.toMatch(/sleep|poll|ask the subagent for status|end your response|Work on non-overlapping/)
           expect((yield* sessions.get(outputSessionID(settled.metadata))).parentID).toBe(parent.id)
         }),
@@ -582,7 +581,7 @@ describe("SubagentTool", () => {
     ),
   )
 
-  it.live("starts a child session and returns the running handle", () =>
+  it.live("starts a child session and acknowledges its finished turn", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>
         Effect.gen(function* () {
@@ -608,17 +607,17 @@ describe("SubagentTool", () => {
 
           expect(settled).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { status: "running" },
-            content: [{ type: "text", text: expect.stringContaining("working in the background") }],
+            output: { status: "completed" },
+            metadata: { status: "completed" },
+            content: [{ type: "text", text: expect.stringContaining("finished its current turn") }],
           })
           const child = yield* sessions.get(outputSessionID(settled.metadata))
-          expect(settled.output).toMatchObject({ sessionID: child.id, status: "running" })
+          expect(settled.output).toMatchObject({ sessionID: child.id, status: "completed" })
           expect(settled.output.output).toContain(`sessionID: ${child.id}`)
-          expect(settled.output.output).toContain("Do not sleep, poll, or proactively check on the subagent's progress.")
-          expect(settled.output.output).toContain("Do not duplicate this subagent's work")
+          expect(settled.output.output).toContain("Results arrive in <subagent> messages")
+          expect(settled.output.output).toContain("Reports list any background work still running")
           expect(settled.output.output).not.toMatch(/end your response|Work on non-overlapping/)
-          expect(settled.metadata).toEqual({ sessionID: child.id, status: "running" })
+          expect(settled.metadata).toEqual({ sessionID: child.id, status: "completed" })
           expect(progress[0]).toEqual({ sessionID: child.id, status: "running" })
           expect(child).toMatchObject({
             parentID: parent.id,
@@ -669,6 +668,7 @@ describe("SubagentTool", () => {
             },
           })
           const childID = outputSessionID(first.metadata)
+          expect(first.output.status).toBe("completed")
           const second = yield* executeTool(registry, {
             sessionID: parent.id,
             ...toolIdentity,
@@ -696,15 +696,15 @@ describe("SubagentTool", () => {
           ).toEqual(["You are a subagent spawned by another session.\nreview this", "continue this"])
           expect(second).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { sessionID: childID, status: "running" },
+            output: { status: "completed" },
+            metadata: { sessionID: childID, status: "completed" },
           })
         }),
       ),
     ),
   )
 
-  it.live("steers a running child session in the background", () =>
+  it.live("waits for a running child after steering it", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>
         Effect.gen(function* () {
@@ -721,9 +721,16 @@ describe("SubagentTool", () => {
           const locations = yield* LocationServiceMap.Service
           const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
           const jobs = yield* Job.Service
+          const bus = yield* Bus.Service
+          const prompted = yield* Deferred.make<void>()
+          yield* bus.project(SessionEvent.InboxEnqueued, (event) =>
+            event.data.sessionID === child.id && event.data.item.type === "user"
+              ? Deferred.succeed(prompted, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          )
           yield* jobs.start({ id: child.id, type: SubagentTool.name, run: Effect.never })
 
-          const result = yield* executeTool(registry, {
+          const pending = yield* executeTool(registry, {
             sessionID: parent.id,
             ...toolIdentity,
             call: {
@@ -737,24 +744,26 @@ describe("SubagentTool", () => {
                 sessionID: child.id,
               },
             },
-          })
+          }).pipe(Effect.forkScoped({ startImmediately: true }))
 
-          expect(result).toMatchObject({
-            status: "completed",
-            output: { status: "running" },
-            metadata: { sessionID: child.id, status: "running" },
-          })
+          yield* Deferred.await(prompted)
+          expect(pending.pollUnsafe()).toBeUndefined()
           expect((yield* sessions.inbox(child.id)).find((message) => message.type === "user")?.payload.text).toBe(
             "continue while running",
           )
           expect((yield* jobs.get(child.id))?.status).toBe("running")
           yield* jobs.cancel(child.id)
+          expect(yield* Fiber.join(pending)).toMatchObject({
+            status: "completed",
+            output: { status: "completed" },
+            metadata: { sessionID: child.id, status: "completed" },
+          })
         }),
       ),
     ),
   )
 
-  completionIt.live("follow-ups to a running child return immediately and notify once", () =>
+  completionIt.live("follow-ups join the running child and notify once", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>
         Effect.gen(function* () {
@@ -768,6 +777,15 @@ describe("SubagentTool", () => {
           const bus = yield* Bus.Service
           const llm = yield* TestLLM.Test
           const gate = yield* llm.gate()
+          const childStarted = yield* Deferred.make<Session.ID>()
+          const steered = yield* Deferred.make<void>()
+          let prompts = 0
+          yield* bus.project(SessionEvent.InboxEnqueued, (event) =>
+            Effect.gen(function* () {
+              if (event.data.sessionID === parent.id || event.data.item.type !== "user") return
+              if (++prompts === 3) yield* Deferred.succeed(steered, undefined)
+            }),
+          )
           const delivered = yield* bus.subscribe(SessionEvent.InboxDelivered).pipe(
             Stream.filter((event) => event.data.sessionID === parent.id),
             Stream.take(1),
@@ -778,25 +796,29 @@ describe("SubagentTool", () => {
             executeTool(registry, {
               sessionID: parent.id,
               ...toolIdentity,
+              progress: (update) => Deferred.succeed(childStarted, outputSessionID(update)).pipe(Effect.asVoid),
               call: {
                 type: "tool-call",
                 id,
                 name: SubagentTool.name,
                 input: { agent: "reviewer", description: "review", prompt: id, ...input },
               },
-            }).pipe(Effect.timeout("2 seconds"))
+            }).pipe(Effect.forkScoped({ startImmediately: true }))
 
           const launched = yield* call("call-launch", {})
-          const childID = outputSessionID(launched.metadata)
+          const childID = yield* Deferred.await(childStarted)
           yield* gate.started
-          const steered = yield* call("call-steer", { sessionID: childID })
+          const steering = yield* call("call-steer", { sessionID: childID })
           const followed = yield* call("call-steer-again", { sessionID: childID })
-          ;[launched, steered, followed].forEach((result) =>
-            expect(result).toMatchObject({ metadata: { sessionID: childID, status: "running" } }),
-          )
+          yield* Deferred.await(steered)
+          for (const pending of [launched, steering, followed]) expect(pending.pollUnsafe()).toBeUndefined()
 
           yield* gate.release
-          yield* Fiber.join(delivered).pipe(Effect.timeout("2 seconds"))
+          for (const pending of [launched, steering, followed])
+            expect(yield* Fiber.join(pending)).toMatchObject({
+              metadata: { sessionID: childID, status: "completed" },
+            })
+          yield* Fiber.join(delivered)
           yield* sessions.wait(parent.id)
           const notices = (yield* sessions.context(parent.id))
             .filter((message) => message.type === "synthetic")
@@ -807,6 +829,77 @@ describe("SubagentTool", () => {
         }),
       ),
     ),
+  )
+
+  completionIt.live("cancels the child when the waiting tool receives a user stop", () =>
+    Effect.gen(function* () {
+      const fixture = yield* reportingFixture()
+      const llm = yield* TestLLM.Test
+      const gate = yield* llm.gate()
+      const stopped = yield* Deferred.make<void>()
+      const childStarted = yield* Deferred.make<Session.ID>()
+      const locations = yield* LocationServiceMap.Service
+      const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(fixture.parent.location)))
+      const pending = yield* executeTool(registry, {
+        sessionID: fixture.parent.id,
+        ...toolIdentity,
+        cancel: Deferred.await(stopped),
+        progress: (update) => Deferred.succeed(childStarted, outputSessionID(update)).pipe(Effect.asVoid),
+        call: {
+          type: "tool-call",
+          id: "call-user-stop",
+          name: SubagentTool.name,
+          input: { agent: "reviewer", description: "review", prompt: "review" },
+        },
+      }).pipe(Effect.forkScoped({ startImmediately: true }))
+      const childID = yield* Deferred.await(childStarted)
+      yield* gate.started
+      expect(pending.pollUnsafe()).toBeUndefined()
+      yield* Deferred.succeed(stopped, undefined)
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        metadata: { sessionID: childID, status: "completed" },
+      })
+      yield* fixture.sessions.wait(childID)
+      yield* gate.release
+      yield* fixture.sessions.wait(fixture.parent.id)
+      expect(yield* fixture.notices).toEqual([
+        expect.objectContaining({ text: expect.stringContaining('state="cancelled"') }),
+      ])
+    }),
+  )
+
+  completionIt.live("interrupting the waiting tool leaves the child recoverable", () =>
+    Effect.gen(function* () {
+      const fixture = yield* reportingFixture()
+      const llm = yield* TestLLM.Test
+      const gate = yield* llm.gate()
+      const childStarted = yield* Deferred.make<Session.ID>()
+      const locations = yield* LocationServiceMap.Service
+      const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(fixture.parent.location)))
+      const pending = yield* executeTool(registry, {
+        sessionID: fixture.parent.id,
+        ...toolIdentity,
+        cancel: Effect.never,
+        progress: (update) => Deferred.succeed(childStarted, outputSessionID(update)).pipe(Effect.asVoid),
+        call: {
+          type: "tool-call",
+          id: "call-interrupted-wait",
+          name: SubagentTool.name,
+          input: { agent: "reviewer", description: "review", prompt: "review" },
+        },
+      }).pipe(Effect.forkScoped({ startImmediately: true }))
+      const childID = yield* Deferred.await(childStarted)
+      yield* gate.started
+      yield* Fiber.interrupt(pending)
+      const jobs = yield* Job.Service
+      expect(yield* jobs.isCancelled(childID)).toBe(false)
+      expect((yield* jobs.get(childID))?.status).toBe("running")
+      expect(yield* jobs.pendingBackground).toMatchObject([{ id: childID, status: "running" }])
+      yield* gate.release
+      yield* fixture.sessions.wait(childID)
+      yield* fixture.sessions.wait(fixture.parent.id)
+      expect(yield* fixture.notices).toEqual([expect.objectContaining({ text: expect.stringContaining(childText) })])
+    }),
   )
 
   it.live("rejects unrelated children and switches agents on continuation", () =>
@@ -882,8 +975,8 @@ describe("SubagentTool", () => {
           })
           expect(yield* call(switched.id, "call-switched-child")).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { sessionID: switched.id, status: "running" },
+            output: { status: "completed" },
+            metadata: { sessionID: switched.id, status: "completed" },
           })
           expect(yield* sessions.get(switched.id)).toMatchObject({
             agent: "reviewer",
@@ -892,8 +985,8 @@ describe("SubagentTool", () => {
           // Switching to an agent without a configured model keeps the child's current model.
           expect(yield* call(switched.id, "call-modelless-switch", "fallback")).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { sessionID: switched.id, status: "running" },
+            output: { status: "completed" },
+            metadata: { sessionID: switched.id, status: "completed" },
           })
           expect(yield* sessions.get(switched.id)).toMatchObject({
             agent: "fallback",
@@ -931,8 +1024,8 @@ describe("SubagentTool", () => {
           const spawned = yield* call("call-override", { model: "test/override#fast", sessionID: "" })
           expect(spawned).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { status: "running" },
+            output: { status: "completed" },
+            metadata: { status: "completed" },
           })
           const child = yield* sessions.get(outputSessionID(spawned.metadata))
           expect(child).toMatchObject({ agent: "reviewer", model: overrideModel })
@@ -941,8 +1034,8 @@ describe("SubagentTool", () => {
           const continued = yield* call("call-override-continue", { sessionID: child.id, model: "test/override" })
           expect(continued).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { sessionID: child.id, status: "running" },
+            output: { status: "completed" },
+            metadata: { sessionID: child.id, status: "completed" },
           })
           expect((yield* sessions.get(child.id)).model).toEqual({
             id: overrideModel.id,
@@ -1004,8 +1097,8 @@ describe("SubagentTool", () => {
           const spawned = yield* call("call-override", { model: "test/override#fast", sessionID: "" })
           expect(spawned).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { status: "running" },
+            output: { status: "completed" },
+            metadata: { status: "completed" },
           })
           const child = yield* sessions.get(outputSessionID(spawned.metadata))
           expect(child).toMatchObject({ agent: "reviewer", model: childModel })
@@ -1013,13 +1106,13 @@ describe("SubagentTool", () => {
           const continued = yield* call("call-override-continue", { sessionID: child.id, model: "test/override" })
           expect(continued).toMatchObject({
             status: "completed",
-            output: { status: "running" },
-            metadata: { sessionID: child.id, status: "running" },
+            output: { status: "completed" },
+            metadata: { sessionID: child.id, status: "completed" },
           })
           expect((yield* sessions.get(child.id)).model).toEqual(child.model)
 
           const fallback = yield* call("call-fallback-override", { agent: "fallback", model: "not-a-ref" })
-          expect(fallback).toMatchObject({ status: "completed", output: { status: "running" } })
+          expect(fallback).toMatchObject({ status: "completed", output: { status: "completed" } })
           expect((yield* sessions.get(outputSessionID(fallback.metadata))).model).toEqual(
             (yield* sessions.get(parent.id)).model,
           )
@@ -1065,9 +1158,9 @@ describe("SubagentTool", () => {
           })
           const childID = outputSessionID(settled.metadata)
           expect(settled.metadata).toMatchObject({
-            status: "running",
+            status: "completed",
           })
-          expect(settled.metadata).toEqual({ sessionID: childID, status: "running" })
+          expect(settled.metadata).toEqual({ sessionID: childID, status: "completed" })
           expect(settled.content).toEqual([{ type: "text", text: expect.stringContaining(`sessionID: ${childID}`) }])
 
           const admission = Array.from(yield* Fiber.join(admitted))[0]
@@ -1139,8 +1232,8 @@ describe("SubagentTool reporting", () => {
 
       expect(settled).toMatchObject({
         status: "completed",
-        output: { status: "running" },
-        metadata: { sessionID: childID, status: "running" },
+        output: { status: "completed" },
+        metadata: { sessionID: childID, status: "completed" },
       })
       yield* fixture.sessions.wait(childID)
       yield* fixture.sessions.wait(fixture.parent.id)
@@ -1169,8 +1262,8 @@ describe("SubagentTool reporting", () => {
       const second = yield* fixture.call("call-second", { sessionID: childID })
       expect(second).toMatchObject({
         status: "completed",
-        output: { status: "running" },
-        metadata: { sessionID: childID, status: "running" },
+        output: { status: "completed" },
+        metadata: { sessionID: childID, status: "completed" },
       })
       yield* fixture.sessions.wait(childID)
       yield* fixture.sessions.wait(fixture.parent.id)
@@ -1197,8 +1290,8 @@ describe("SubagentTool reporting", () => {
       const childID = outputSessionID(settled.metadata)
       expect(settled).toMatchObject({
         status: "completed",
-        output: { status: "running" },
-        metadata: { sessionID: childID, status: "running" },
+        output: { status: "completed" },
+        metadata: { sessionID: childID, status: "completed" },
       })
       yield* fixture.sessions.wait(childID)
       yield* fixture.sessions.wait(fixture.parent.id)

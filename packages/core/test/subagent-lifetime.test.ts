@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 import { LanguageModel } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { TestLLM } from "@opencode/ai/testing"
@@ -94,7 +94,7 @@ describe("subagent observer lifetime", () => {
           )
           const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
           const gate = yield* llm.gate()
-          const result = yield* executeTool(registry, {
+          const running = yield* executeTool(registry, {
             sessionID: parent.id,
             ...toolIdentity,
             call: {
@@ -108,9 +108,7 @@ describe("subagent observer lifetime", () => {
                 prompt: "Review the fixture",
               },
             },
-          })
-          expect(result.status).toBe("completed")
-          expect(result.output).toMatchObject({ status: "running" })
+          }).pipe(Effect.forkChild)
           yield* gate.started
           expect(yield* sessions.context(parent.id)).toEqual([])
           if (evict) {
@@ -123,6 +121,9 @@ describe("subagent observer lifetime", () => {
           }
           if (outcome === "cancelled") yield* jobs.cancel(child.id)
           yield* gate.release
+          const result = yield* Fiber.join(running)
+          expect(result.status).toBe("completed")
+          expect(result.output).toMatchObject({ status: "completed" })
           yield* jobs.wait({ id: child.id })
           yield* llm.wait(2).pipe(Effect.timeout("2 seconds"))
           yield* sessions.wait(parent.id)
