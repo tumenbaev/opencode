@@ -107,6 +107,41 @@ describe("Code Mode path and Bun", () => {
 })
 
 describe("Tool", () => {
+  codeModeIt.effect("keeps full-mode globals and fetch aligned with cached permission snapshots", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() })
+      const services = codeModeServices("/session/dir")
+      const snapshots: Array<{ snapshot: Tool.Snapshot; fetch: boolean }> = []
+      for (const fetch of [true, false, true, false]) {
+        const rules: Permission.Ruleset = fetch ? [] : [{ action: "webfetch", resource: "*", effect: "deny" }]
+        const snapshot = yield* service.snapshot(rules, services)
+        const description = snapshot.definitions.find((tool) => tool.name === "execute")!.description
+        expect(description.includes("`fetch`")).toBe(fetch)
+        expect(description.includes("HTTP requests")).toBe(fetch)
+        expect(description).toContain("Bun's file APIs")
+        snapshots.push({ snapshot, fetch })
+      }
+      for (const { snapshot, fetch } of snapshots) {
+        const result = yield* snapshot.execute({
+          ...call("execute"),
+          call: {
+            type: "tool-call",
+            id: "full-fetch-availability",
+            name: "execute",
+            input: { code: 'return [typeof fetch, typeof Bun, typeof path, await tools.echo({ text: "ok" })]' },
+          },
+        })
+        expect(JSON.parse(result.output.output)).toEqual([
+          fetch ? "function" : "undefined",
+          "object",
+          "object",
+          { text: "ok" },
+        ])
+      }
+    }),
+  )
+
   it.effect("keeps fetch advertising and availability conditional across permission snapshots", () =>
     Effect.gen(function* () {
       const service = yield* Tool.Service

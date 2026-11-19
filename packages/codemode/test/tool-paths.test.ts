@@ -132,7 +132,9 @@ describe("callable namespaces", () => {
     expect(diagnostic.message).toBe(
       "Tool 'issues' is not callable, it is a namespace. Did you mean tools.issues.issues, tools.issues.archive, or tools.issues.create?",
     )
-    expect(diagnostic.suggestions).toEqual(["2 more under 'issues'. Use Object.keys(tools.issues) to list their names."])
+    expect(diagnostic.suggestions).toEqual([
+      "2 more under 'issues'. Use Object.keys(tools.issues) to list their names.",
+    ])
   })
 })
 
@@ -486,9 +488,9 @@ describe("unknown tool calls reject their promise", () => {
   const runtime = CodeMode.make({ tools: { shop: { show: echo("Show", "shown"), list: echo("List", "listed") } } })
 
   test("try/await catches the rejection", async () => {
-    expect(
-      await value(runtime, `try { await tools.shop.nope({}) } catch (error) { return error.message }`),
-    ).toBe("Unknown tool 'shop.nope'.")
+    expect(await value(runtime, `try { await tools.shop.nope({}) } catch (error) { return error.message }`)).toBe(
+      "Unknown tool 'shop.nope'.",
+    )
   })
 
   test(".catch on the call sees the rejection", async () => {
@@ -517,7 +519,7 @@ describe("unknown tool calls reject their promise", () => {
     const unknown = await failure(runtime, `return await tools.shop.shows({})`)
     expect(unknown.kind).toBe("UnknownTool")
     expect(unknown.message).toBe("Unknown tool 'shop.shows'. Did you mean tools.shop.show?")
-    expect(unknown.suggestions).toEqual(["Use search to find available tools."])
+    expect(unknown.suggestions).toEqual(["Use an exact name from the available tool list."])
   })
 
   test("reading an unknown path is unchanged", async () => {

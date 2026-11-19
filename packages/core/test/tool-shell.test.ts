@@ -906,19 +906,25 @@ describe("ShellTool", () => {
       return withSession(tmp.path, (registry) =>
         Effect.gen(function* () {
           const snapshot = yield* registry.snapshot()
-          // Pinned: listed even when the catalog has no room for other tools, with the result contract in the field
-          // annotations.
+          // Pinned: listed even when the catalog has no room for other tools.
           const pinned = CodeModeCatalog.summarize(snapshot.codeModeCatalog!, { budget: 0 }).namespaces.flatMap(
             (namespace) => namespace.entries,
           )
           expect(pinned.map((entry) => entry.path)).toEqual(["shell"])
-          expect(pinned[0]!.line).toContain("600000")
-          expect(pinned[0]!.line).toContain("Execute a shell command and return its output.")
+          expect(pinned[0]!.line).toBe("- shell")
+          const described = yield* snapshot.execute({
+            sessionID,
+            ...toolIdentity,
+            call: { type: "tool-call", id: "describe-shell", name: "describe", input: { name: "shell" } },
+          })
+          const contract = `${described.output.description}\n${described.output.signature}`
+          expect(contract).toContain("600000")
+          expect(contract).toContain("Execute a shell command and return its output.")
           // No background parameter in Code Mode.
-          expect(pinned[0]!.line).not.toContain("background?: boolean")
-          expect(pinned[0]!.line).not.toContain("Background commands return immediately")
-          expect(pinned[0]!.line).toContain("A result without shellID is final")
-          expect(pinned[0]!.line).toContain("there are no separate stdout or stderr fields")
+          expect(contract).not.toContain("background?: boolean")
+          expect(contract).not.toContain("Background commands return immediately")
+          expect(contract).toContain("A result without shellID is final")
+          expect(contract).toContain("there are no separate stdout or stderr fields")
           const timeouts: number[] = []
           const hooks = yield* PluginHooks.Service
           yield* hooks.register("shell", "create.before", (event) =>

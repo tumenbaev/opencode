@@ -859,7 +859,16 @@ test("preserves MCP prompt execution errors", async () => {
           const service = yield* Mcp.Service
           yield* settled(service)
 
-          expect((yield* service.prompts()).map((prompt) => prompt.name)).toContain("greet")
+          // Prompt discovery runs in the background after the server connects.
+          const prompts = yield* service.prompts().pipe(
+            Effect.filterOrFail(
+              (prompts) => prompts.some((prompt) => prompt.name === "greet"),
+              () => new Error("greet prompt was not discovered"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("10 millis") }),
+            Effect.timeout("10 seconds"),
+          )
+          expect(prompts.map((prompt) => prompt.name)).toContain("greet")
           const error = yield* service.prompt({ server: "resources", name: "greet" }).pipe(Effect.flip)
           expect(error.message).toContain(promptError.message)
         }).pipe(Effect.provide(resourceMcpLayer(server.url)))

@@ -191,7 +191,7 @@ const precompute = Effect.gen(function* () {
     agent: { id: Agent.ID.make("build"), info: Agent.Info.default(Agent.ID.make("build")) },
     tools: { definitions: [], execute: () => Effect.die("no tools during compaction") },
   }
-  yield* compaction.transform((editor) => editor.configure({ precompute: true }))
+  yield* compaction.transform((editor) => editor.configure({ background: true }))
   yield* compaction.precompute(Effect.succeed(context))
   return { compaction, context }
 })
